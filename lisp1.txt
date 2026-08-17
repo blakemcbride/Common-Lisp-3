@@ -218,6 +218,17 @@ have a macro whose arguments are not all expressions, teach the
 converter about it with CL3:DEFINE-FORM-WALKER instead of letting it
 expand.
 
+The single namespace does not depend on the rest of Common Lisp 3.  To
+use it alone -- no layer over CLOS, and symbols left case-insensitive as
+in ordinary Common Lisp -- load package.lisp and lisp1.lisp and stop
+there:
+
+    (load "package")
+    (load "lisp1")
+    (use-package :cl3)
+
+Loading cl3 instead brings in all three changes.
+
 The whole system has no dependencies and can be loaded or compiled like
 any other lisp program.  It is in its own package, shadows nothing, and
 exports nothing that collides with COMMON-LISP -- or with anything else

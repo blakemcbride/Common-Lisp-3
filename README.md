@@ -46,6 +46,16 @@ or, with ASDF:
 (use-package :cl3)
 ```
 
+The three changes are separable.  To take the single namespace on its
+own -- no layer over CLOS, and symbols left case-insensitive as in
+ordinary Common Lisp -- load just these two:
+
+```
+(load "package")
+(load "lisp1")
+(use-package :cl3)
+```
+
 `DEFINE` gives a name a value, which may be a function:
 
 ```lisp

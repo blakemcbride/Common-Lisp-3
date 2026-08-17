@@ -981,3 +981,27 @@ same function name fails the second time."
                    (error (c) (princ-to-string c)))))
     (is-true (search "DEFINE-CLASS" message :test #'char-equal)
              "the error names DEFINE-CLASS rather than failing obscurely")))
+
+(deftest single-namespace-does-not-need-the-rest (:phase "cl3" :severity :serious)
+  ;; The three changes Common Lisp 3 makes are meant to be separable: loading
+  ;; package.lisp and lisp1.lisp alone gives the single namespace with symbols
+  ;; still case-insensitive and no layer over CLOS.  README.md documents that,
+  ;; so nothing in lisp1.lisp may reach into clos-utils.lisp.
+  (let* ((here (make-pathname :name nil :type nil :version nil
+                              :defaults (or *load-truename*
+                                            *default-pathname-defaults*)))
+         (source (merge-pathnames "lisp1.lisp"
+                                  (make-pathname
+                                   :directory (butlast (pathname-directory here))
+                                   :defaults here)))
+         (text (with-open-file (in source)
+                 (let ((s (make-string (file-length in))))
+                   (subseq s 0 (read-sequence s in))))))
+    (is-true (plusp (length text)) "lisp1.lisp is readable")
+    ;; Call syntax, not bare mentions: DEFINE-CLASS and DEFINE-METHOD appear in
+    ;; the walker table, where they are hash keys rather than dependencies --
+    ;; registering a walker for a symbol does not require the macro to exist.
+    (dolist (name '("(get-slot" "(set-slot" "(define-class" "(get-class-object"
+                    "*class-instances*" "(parallel-class-name"))
+      (is-equal nil (search name text :test #'char-equal)
+                (format nil "lisp1.lisp never calls ~a)" (subseq name 1))))))
