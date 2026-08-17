@@ -1,0 +1,75 @@
+# Regression suite across every implementation Common Lisp 3 claims to support.
+#
+# Several of the defects this suite covers appeared on one implementation only:
+# one on CCL, one on ABCL, and a name clash that broke (use-package :cl3) on CCL
+# alone. A single-implementation run would have missed all of them. The matrix
+# is the point of this file.
+#
+# fail-fast is off deliberately: when something breaks it is far more useful to
+# see which implementations broke than to stop at the first one.
+#
+# Installation depends on what the runner image provides, and CLISP in
+# particular has come and gone from Ubuntu's archives, so it is marked
+# continue-on-error and cannot turn the build red by its absence. Every other
+# implementation must actually be on PATH: a silently failed install would
+# otherwise let `make test` skip everything and report success.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CCL_VERSION: "1.13"
+
+jobs:
+  test:
+    name: ${{ matrix.lisp }}
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.optional || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        lisp: [sbcl, ecl, abcl, ccl]
+        include:
+          - lisp: clisp
+            optional: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ${{ matrix.lisp }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          case "${{ matrix.lisp }}" in
+            sbcl|ecl|abcl|clisp)
+              sudo apt-get update -qq
+              sudo apt-get install -y --no-install-recommends "${{ matrix.lisp }}"
+              ;;
+            ccl)
+              tarball="ccl-${CCL_VERSION}-linuxx86.tar.gz"
+              url="https://github.com/Clozure/ccl/releases/download/v${CCL_VERSION}/${tarball}"
+              curl -fsSL -o "$tarball" "$url"
+              sudo mkdir -p /usr/local/src
+              sudo tar xzf "$tarball" -C /usr/local/src
+              sudo ln -sf /usr/local/src/ccl/scripts/ccl64 /usr/local/bin/ccl
+              ;;
+          esac
+
+      - name: Confirm it is on PATH
+        shell: bash
+        run: |
+          set -eux
+          command -v ${{ matrix.lisp }}
+          ${{ matrix.lisp }} --version || true
+
+      - name: Regression suite
+        run: make test LISPS=${{ matrix.lisp }}
+
+      - name: Benchmark
+        run: make bench LISPS=${{ matrix.lisp }}
+        continue-on-error: true

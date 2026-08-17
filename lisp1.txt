@@ -1,5 +1,13 @@
 
-Lisp1
+The single namespace
+====================
+
+This is the part of Common Lisp 3 that collapses the function and
+variable namespaces into one.  It lives in lisp1.lisp, and is loaded by
+cl3.lisp along with the layer over CLOS.  See README.md for the system
+as a whole.
+
+================================================================================
 
 The problem:
 
@@ -100,19 +108,28 @@ system that requires a Phd to understand and use effectively, and,
 surprisingly, the fact that () and #f are treated differently (a topic
 of an article I posted).
 
-This library is intended to give CL the only really nice feature (IMO)
+Common Lisp 3 is intended to give CL the only really nice feature (IMO)
 that another language has to offer - LISP1 semantics.
 
 ================================================================================
 
-Lisp1 has been tested with the following Lisp systems:
-    CLISP
+Common Lisp 3 is tested, on every commit, against:
     SBCL
-    ABCL
+    CLISP
     ECL
+    ABCL
+    CCL (Clozure)
 
-Lisp1 mainly adds four macros to the Common Lisp environment, DEFINE,
-DEFINE-MACRO, DEFINE-METHOD, and LISP1.  DEFINE is analogous to
+Run the suite with "make test", which uses whichever of those are
+installed, or (asdf:test-system "lisp1").  "make bench" measures the
+per-call overhead.  Run the suite on all five and not just the one to
+hand: implementations differ in ways that matter here, particularly in
+how the reader represents back-quote and when a compile-time macro
+definition becomes visible.
+
+This part of the system adds four macros, DEFINE, DEFINE-MACRO,
+DEFINE-METH, and LISP1.  (DEFINE-METH rather than DEFINE-METHOD, which
+belongs to the layer over CLOS.)  DEFINE is analogous to
 DEFPARAMETER only it is used to define variables AND functions.
 Functions are defined as lambda expressions.  So, for example, if in
 CL you say:
@@ -136,7 +153,16 @@ You would now write:
 
 DEFINE-MACRO is for defining macros and works just like DEFMACRO.
 
-DEFINE-METHOD is for defining methods and works just like DEFMETHOD.
+DEFINE-METH is for defining methods and works just like DEFMETHOD,
+qualifiers included:
+
+    (define-method area ((s square))  (* (side s) (side s)))
+    (define-method area :before ((s square)) (validate s))
+
+DEFINE-DYNAMIC defines a dynamically scoped global -- an ordinary
+special variable -- for the occasions when that is what you want.
+DEFINE is lexical: a LET or lambda parameter of the same name shadows
+it, and closures close over it, which is the point.
 
 LISP1 is a macro which executes the code inside (in a PROGN form) in a
 LISP1 environment.  This is needed when executing code at the top
@@ -148,48 +174,110 @@ level which is not part of a function or macro.  For example:
        (fun 3 4)))
 
 So long as this package is loaded, the normal Lisp compiler and image
-save / load should work with the underlying Lisp system.  Overhead
-should be very, very minimal or totally non-existent depending on the
-underlying system implementation.  There should be no limitations or
-restrictions on the underlying system.  Lisp1 converts everything from
-LISP1 to CL as it is read in or defined and only has to do this once
-so, again, the overhead should be virtually non-existent.
+save / load work with the underlying Lisp system.  Lisp1 converts
+everything from LISP1 to CL as it is defined, and only has to do this
+once, so there is no conversion cost at run time.
 
-Lisp1 consists of a single source file (lisp1.lisp).  It can be loaded
-or compiled and loaded like any other lisp program.  It is in its own
-package so shouldn't interfere with anything else.  So, to load use:
+There is a run-time cost, and it is worth being honest about it.  A
+Lisp1 call compiles to a FUNCALL of a variable, which is an indirect
+call the compiler cannot see through.  Measured by bench/overhead.lisp
+on a trivial callee, 20 million iterations, best of three, over several
+runs on one machine:
 
-    (load "lisp1")
-    (use-package "LISP1")
+    SBCL    about 1.1x a native call over the whole loop, and
+            1.1x to 1.4x for the call alone once the cost of the
+            empty loop is subtracted
+    CCL     about 1.6x over the whole loop, 2.7x for the call alone
+    CLISP   about 1.0x -- lost in the noise
+
+Run it on your own machine rather than trusting those; a
+microbenchmark on a callee this small exaggerates call overhead
+relative to real code, and the figures move a little between runs.
+
+The cycles are the smaller part.  The larger part is what the compiler
+cannot do for an indirect call: no inlining, no type inference, and no
+argument-count check.  DEFINE recovers the last of those where it can
+-- when the value is written as a literal lambda, a call with the wrong
+number of arguments draws a style warning at macroexpansion time.  Set
+CL3:*CHECK-ARITY* to NIL to switch that off.
+
+Two limitations are worth knowing before you start.
+
+Because NAME's function cell holds the macro that makes (NAME arg...)
+work, #'NAME and CL:TRACE cannot.  The value is still reachable: NAME
+is a symbol macro for its value, so ordinary Common Lisp code can write
+(funcall name 1 2) or (mapcar name list).  CL3:VALUE-OF and
+CL3:FUNCTION-OF give the value directly, (SETF CL3:VALUE-OF) sets
+it, and CL3:TRACE-CALLS / CL3:UNTRACE-CALLS trace it.
+
+A form Lisp1 does not recognise is macroexpanded and its expansion
+converted, which is correct whatever the macro turns out to be.  When a
+form can be neither recognised nor expanded, Lisp1 leaves it alone and
+says so with a style warning rather than guessing at its shape.  If you
+have a macro whose arguments are not all expressions, teach the
+converter about it with CL3:DEFINE-FORM-WALKER instead of letting it
+expand.
+
+The whole system has no dependencies and can be loaded or compiled like
+any other lisp program.  It is in its own package, shadows nothing, and
+exports nothing that collides with COMMON-LISP -- or with anything else
+already accessible in COMMON-LISP-USER -- so using it cannot disturb the
+code around it.  To load:
+
+    (load "cl3")
+    (use-package :cl3)
 
 New user packages need to call:
 
-    (use-package "LISP1")
+    (use-package :cl3)
 
-in order to gain access to the exported functions.
+in order to gain access to the exported macros and functions.
+
+Compiled code does not need cl3 loaded in order to run, but the CL3 and
+CL3-CELLS packages must exist, because the compiled code refers to
+symbols in them.  See the preamble in test-3.lisp.
+
+Ordinary CL:LOAD and CL:COMPILE-FILE handle this source; so do ASDF and
+SLIME.  Definitions and calls to defined names need nothing around
+them.  A bare top level expression over a local function value does
+need wrapping, which is what LISP1 is for:
+
+    (lisp1 (let ((f (lambda (x) (* x 2)))) (print (f 3))))
+
+CL3:EVAL-FORM converts and evaluates a single form, and CL3:REP is
+a read-eval-print loop that converts everything you type.
 
 ================================================================================
 
-See examples.lisp for some examples.
+See test-3.lisp for examples of the single namespace, and
+test-2.lisp for the layer over CLOS.
 
 ================================================================================
 
-Concerns:
+Limitations:
 
-1.  I have tested the system with macros and back-quote but not well
-enough I fear.
+1.  Conversion reaches only what Lisp1 is given: the insides of DEFINE,
+DEFINE-MACRO, DEFINE-METH, LISP1, EVAL-FORM and REP.  Code reached
+any other way is ordinary Common Lisp.
 
-2.  The system handles the majority of CL primitives including many I
-had to write special handlers for.  There are surely some (many?) I've
-missed.
+2.  A macro defined by MACROLET is left alone, with a style warning.
+Its shape cannot be known here: the conversion happens before Common
+Lisp establishes the MACROLET, so the expansion is not available.
 
-3.  I have only addressed functions and ignored property lists, etc.
-CL already has facilities to handle property lists in a LISP1 way
-without mucking up the language.  Other bindings are of much less use
-and problem.
+3.  DEFGENERIC is not integrated with DEFINE-METH.  Use DEFINE-METH on
+its own; it creates the generic function.  DEFINE-METH and the CLOS
+layer's DEFINE-METHOD are different things: the first puts a method on a
+generic function held in a single-namespace variable, the second is the
+fixed-argument method form described in README.md.
 
-On the plus side, once discovered, any shortcoming should be easy to
-correct.
+4.  Only the function and variable namespaces are collapsed.  Property
+lists and the rest are untouched, and do not need to be -- Common Lisp
+already handles them in a single-namespace way.
+
+5.  The argument-count check reads the lambda list written in the
+definition.  Assigning a function of a different arity to the name
+afterwards leaves the check out of date, which is why it is a style
+warning and why CL3:*CHECK-ARITY* exists.
 
 Please feel free with questions, comments, and improvements.
 

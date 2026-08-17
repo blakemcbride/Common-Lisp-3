@@ -1,0 +1,18 @@
+# Compiled output, per implementation
+*.fasl
+*.fas
+*.fsl
+*.lib
+*.abcl
+*.o
+*.dx64fsl
+*.lx64fsl
+*.dx32fsl
+*.lx32fsl
+
+# Planning and working notes: useful while the work is going on, not repository
+# content.  Keep them out of version control.
+PLAN.md
+
+# Scratch area for the file-operation tests
+tests/scratch/

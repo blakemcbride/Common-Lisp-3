@@ -39,16 +39,71 @@ The system can be loaded with the following Lisp commands:
 (use-package :cl3)
 ```
 
+or, with ASDF:
+
+```
+(asdf:load-system "cl3")
+(use-package :cl3)
+```
+
+`DEFINE` gives a name a value, which may be a function:
+
+```lisp
+(define add (lambda (a b) (+ a b)))
+(define apply-to (lambda (f a b) (f a b)))
+(apply-to add 5 6)                                ; => 11
+```
+
+Definitions are lexically scoped, so closures behave:
+
+```lisp
+(define make-counter
+  (lambda ()
+    (let ((count 0))
+      (lambda () (setq count (+ count 1)) count))))
+```
+
+`DEFINE-METH` adds methods to a generic function held in such a name, and
+is not the same thing as `DEFINE-METHOD`, which is the fixed-argument
+method form belonging to the layer over CLOS.
+
+A bare top level expression over a local function value needs `LISP1`
+around it; definitions and calls to defined names do not:
+
+```lisp
+(lisp1 (let ((f (lambda (x) (* x 2)))) (print (f 3))))
+```
+
+See lisp1.txt for the single namespace in detail, test-3.lisp for
+examples of it, and test-2.lisp for the layer over CLOS.
+
 ## Portability
 
-This code works on:
+Tested, on every commit, against:
 
 * SBCL
 * CLISP
 * ABCL
 * CCL
 * ECL
-* MKCL
+
+MKCL is believed to work but is not in the test matrix.
+
+## Testing
+
+```
+make test
+```
+
+runs the regression suite on whichever of those implementations are
+installed.  Run it on all of them rather than the one to hand:
+implementations differ in ways that matter here, particularly in how the
+reader represents back-quote and when a compile-time macro definition
+becomes visible.
+
+`make bench` measures what the single namespace costs per call.  A
+call through a name compiles to a `funcall` of a variable, which runs
+about 1.0x-1.6x a native call depending on the implementation.
 
 ## Needed
 
