@@ -13,7 +13,10 @@ functional programming.
 
 2. Although CLOS is untouched, Common Lisp 3 adds a layer on top of CLOS
 that facilitates the creation of object-oriented code.  This makes it
-easier to do the things that most programmers do most of the time.
+easier to do the things that most programmers do most of the time.  It
+provides both of Smalltalk's kinds of class-side state: class variables,
+shared by a class and every subclass, and class-instance variables, of
+which each class has its own.
 
 3. Common Lisp 3 supports case-sensitive symbols.
 

@@ -32,6 +32,14 @@ See *Upgrading* below.
   CLOS with none of this code involved. `DEFINE-CLASS` now saves the class
   variables before redefining and restores them afterwards.
 
+### Added — class-instance variables
+
+- **`DEFINE-CLASS` takes an optional fifth argument**, a list of
+  class-instance variables: declared once, but every class in the hierarchy
+  has its own value, for a per-class count or registry. Smalltalk has both
+  kinds and now so does this. A four-argument call means exactly what it did
+  before, and class variables are unaffected.
+
 ### Fixed — the CLOS layer
 
 - **A class can be redefined.** The `DEFCLASS` forms were the initial value of

@@ -20,7 +20,8 @@ to create a class is outlined as follows:
 (define-class class-name
            (super-class-list)
 	   (class-variables)
-	   (instance-variables))
+	   (instance-variables)
+	   (class-instance-variables))     ; optional, see section 5
 
 For example:
 
@@ -87,7 +88,7 @@ writes the same value:
 (get-slot my-class 'cv1)        ->  64
 
 An instance reaches its class variables too, which is what lets a method
-use them through 'self' (section 7):
+use them through 'self' (section 8):
 
 (get-slot i1 'cv1)              ->  64
 
@@ -97,7 +98,50 @@ An instance variable takes precedence over a class variable of the same
 name, so a name declared in both reaches the instance's own.
 
 
-5.  Creating an instance method
+5.  The two kinds of class variable
+
+Smalltalk has two kinds of class-side state, and so does this.  Sections
+1 and 4 describe the first:
+
+    class variables           one value, shared by the class that
+                              declares it and every subclass
+
+    class-instance variables  declared once, but every class in the
+                              hierarchy has its own value
+
+Class variables are the third argument to define-class and are what you
+usually want: a setting, a registry, a limit that the whole hierarchy
+agrees on.  Class-instance variables are the fifth and optional
+argument, for when each class needs its own -- a per-class count, say:
+
+(define-class shape ()
+    (units)                 ; class variable: shared by every shape
+    (x y)                   ; instance variables
+    ((made :initform 0)))   ; class-instance variable: one count per class
+
+(define-class circle (shape) () (radius) ())
+
+Setting 'units' through circle changes what shape reads, because there
+is one of it:
+
+(set-slot circle 'units 'mm)
+
+(get-slot shape 'units)         ->  mm
+
+'made' behaves the other way: shape and circle each have their own,
+each starting at 0.
+
+(set-slot circle 'made 3)
+
+(get-slot circle 'made)         ->  3
+
+(get-slot shape 'made)          ->  0
+
+A four-argument define-class, as in section 1, simply declares no
+class-instance variables.
+
+
+6.  Creating an instance method
 
 The following creates an instance method named 'addiv' that takes two
 arguments named 'ins' and 'val'.  The 'ins' argument is expected to be
@@ -111,7 +155,7 @@ The new method can be used as follows:
 
 (addiv i1 72)
 
-6.  Creating a class method
+7.  Creating a class method
 
 The following creates a class method named 'addcv' that takes two
 arguments named 'cls' and 'val'.  The 'cls' argument is expected to be
@@ -125,9 +169,9 @@ The new method can be used as follows:
 
 (addcv my-class 42)
 
-7.  Creating a method with define-method
+8.  Creating a method with define-method
 
-Sections 5 and 6 use CLOS' own defmethod, which works and gives you all
+Sections 6 and 7 use CLOS' own defmethod, which works and gives you all
 of CLOS.  define-method is a shorter form for the common case: a method
 on one class that wants to reach the instance.  It binds the instance to
 'self'.
@@ -158,10 +202,10 @@ my-class or any of its subclasses, in one shared place:
 
 define-method takes no qualifiers and dispatches on one argument.  Where
 you want :before, :after or :around, or dispatch on more than one
-argument, use defmethod as in sections 5 and 6.
+argument, use defmethod as in sections 6 and 7.
 
 
-8.  Other facilities
+9.  Other facilities
 
 Returns the class of an (class or instance) object
 
@@ -193,14 +237,14 @@ CLOS standard way of accessing instance slots:
 
 (setf (slot-value i1 'iv1) 32)
 
-9.  Create a class with default slot values:
+10.  Create a class with default slot values:
 
 (define-class newclass ()
     ((cv1 :initform 42))
     ((iv1 :initform 36)
      (iv2 :initform 11)))
 
-10.  Create a class with named initial values
+11.  Create a class with named initial values
 
 (define-class class2 () ()
    ((iv1 :initarg :val)))
@@ -212,7 +256,7 @@ To use do:
 This will create a new instance with iv1 set to 66.
 
      
-11.  Instance initialization method
+12.  Instance initialization method
 
 To run code whenever an instance is created, add an :after method to
 CLOS' initialize-instance.  That needs a qualifier, so it is written

@@ -13,11 +13,22 @@
 ;  variables.  One instance of that parallel class holds the values, and
 ;  *CLASS-INSTANCES* maps the primary class object to it.
 ;
-;  Those slots are :allocation :class, so a class variable is one storage
-;  location shared by the class that declares it and every subclass --
-;  Smalltalk semantics.  Setting it through a subclass, or through an
-;  instance, sets the value the whole hierarchy sees.  It is not visible
-;  above the class that declares it.
+;  Smalltalk has two kinds of class-side state, and so does this:
+;
+;    class variables           one value, shared by the class that declares
+;                              it and every subclass.  Setting it through a
+;                              subclass, or through an instance, sets the
+;                              value the whole hierarchy sees.  Held in a
+;                              :allocation :class slot of the parallel
+;                              class, which is what makes it one location.
+;
+;    class-instance variables  declared once, but every class in the
+;                              hierarchy gets its own value -- a per-class
+;                              counter or registry.  Held in an ordinary
+;                              slot of the parallel class, of which there
+;                              is one instance per class.
+;
+;  Neither is visible above the class that declares it.
 ;
 ;  The parallel class exists so that a class variable can be read from a
 ;  class object with no instance in hand.  Reaching a :allocation :class
@@ -40,8 +51,16 @@ does not scatter the parallel names."
   (intern (concatenate 'string "CLASS-" (string name))
           (or (and (symbolp name) (symbol-package name)) *package*)))
 
-(defmacro define-class (name super-class-list class-variables instance-variables)
+(defmacro define-class (name super-class-list class-variables instance-variables
+                        &optional class-instance-variables)
   "Define a class, its parallel class-variable class, and the holder for them.
+
+CLASS-VARIABLES are shared with every subclass: one value for the hierarchy.
+CLASS-INSTANCE-VARIABLES are declared once but give every class its own
+value.  Both are read and written with GET-SLOT and SET-SLOT on the class,
+and reached from an instance when the name is not an instance variable.
+The fifth argument is optional, so a four-argument call means what it always
+did.
 
 Re-evaluating this redefines the class.  The DEFCLASS forms are evaluated
 every time -- they used to be the initial value of a DEFVAR, which does not
@@ -59,15 +78,8 @@ with it."
              (class-variable-values (find-class ',name nil)
                                     ',(class-variable-names class-variables)))
        (defclass ,parallel ,parallel-supers
-         ;  :allocation :class is what makes a class variable a class
-         ;  variable in the Smalltalk sense: one storage location, shared
-         ;  with every subclass.  Without it each class in the hierarchy
-         ;  inherited the slot's shape but got its own separate value.
-         ,(mapcar (lambda (spec)
-                    (if (consp spec)
-                        (append spec '(:allocation :class))
-                        (list spec :allocation :class)))
-                  class-variables))
+         ,(append (mapcar #'shared-slot-spec class-variables)
+                  (mapcar #'per-class-slot-spec class-instance-variables)))
        (defclass ,name ,super-class-list ,instance-variables)
        (defparameter ,parallel (find-class ',parallel))
        (defparameter ,name (find-class ',name))
@@ -86,6 +98,20 @@ is retained when a class is redefined.  SBCL, CCL and CLISP do that; ECL and
 ABCL lose it, in pure CLOS with none of this code involved.  DEFINE-CLASS
 therefore saves the class variables before redefining and puts them back
 afterwards, so a class variable survives a redefinition everywhere.")
+
+(defun shared-slot-spec (spec)
+  "SPEC as a slot of the parallel class holding a class variable: one
+location for the whole hierarchy.  An explicit :allocation is left alone, so
+a caller who knows what the parallel class is can say what they mean."
+  (let ((spec (if (consp spec) spec (list spec))))
+    (if (member :allocation spec)
+        spec
+        (append spec '(:allocation :class)))))
+
+(defun per-class-slot-spec (spec)
+  "SPEC as a slot of the parallel class holding a class-instance variable:
+one location per class, since there is one parallel instance per class."
+  (if (consp spec) spec (list spec)))
 
 (defun class-variable-names (specs)
   "The names in a list of slot specifications."
