@@ -61,13 +61,19 @@
 
 (test (defvar i2 (make-instance my-class2)))
 
-; Should throw an exception because although the existance of class variables is inherited, each class has its own instance of the class variable.
-; Thus, it doesn't contain the value previously set.
-(teste (get-slot my-class2 'cv1)) 
+; A class variable is one storage location shared with every subclass, as in
+; Smalltalk, so the value set on my-class is what my-class2 sees.
+(testr 44 (get-slot my-class2 'cv1))
 
+; and setting it through the subclass sets the one value both share
 (testr 42 (set-slot my-class2 'cv1 42))
 
-(testr 42 (get-slot my-class2 'cv1)) 
+(testr 42 (get-slot my-class2 'cv1))
+
+(testr 42 (get-slot my-class 'cv1))
+
+; an instance reaches its class variables too
+(testr 42 (get-slot i1 'cv1))
 
 ; instance method
 (testn  (defmethod addv ((ins my-class) val)
@@ -78,7 +84,8 @@
 	 (+ (get-slot cls 'cv1) val)))
 
 (testr 177 (addv i1 100))
-(testr 144 (addv my-class 100))
+; cv1 is 42 here, not 44: the subclass set the one value both share
+(testr 142 (addv my-class 100))
 
 (testr 1000 (set-slot i2 'iv1 1000))
 (testr 1000 (get-slot i2 'iv1))

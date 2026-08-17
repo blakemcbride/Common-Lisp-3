@@ -896,13 +896,69 @@ same function name fails the second time."
   (is-equal 77 (eval-str "(set-slot inst-a 'iv1 77)")  "and an instance variable")
   (is-equal 44 (eval-str "(get-slot cls-a 'cv1)")      "and read back")
   (is-equal 77 (eval-str "(get-slot inst-a 'iv1)"))
-  ;; A class variable is inherited in existence but not in value.
+  ;; A class variable is one storage location shared with every subclass.
   (eval-str "(define-class cls-b (cls-a) (cv3) (iv3))")
   (eval-str "(defparameter inst-b (make-instance cls-b))")
-  (signals-error (eval-str "(get-slot cls-b 'cv1)")
-                 "a subclass gets its own copy of a class variable, unset")
-  (is-equal 42 (eval-str "(set-slot cls-b 'cv1 42)"))
-  (is-equal 42 (eval-str "(get-slot cls-b 'cv1)")))
+  (is-equal 44 (eval-str "(get-slot cls-b 'cv1)")
+            "a subclass sees the value its parent set")
+  (is-equal 42 (eval-str "(progn (set-slot cls-b 'cv1 42) (get-slot cls-a 'cv1))")
+            "and setting it through the subclass sets the one shared value")
+  ;; Declared lower down, it is not visible above.
+  (eval-str "(set-slot cls-b 'cv3 7)")
+  (signals-error (eval-str "(get-slot cls-a 'cv3)")
+                 "a class variable is not visible above the class declaring it"))
+
+(deftest class-variables-are-shared-like-smalltalk (:phase "cl3" :severity :serious)
+  ;; The slots holding class variables are :allocation :class, so there is one
+  ;; storage location per declaring class rather than one per class in the
+  ;; hierarchy.  Each class used to get its own copy: the shape was inherited,
+  ;; the value was not.
+  (eval-str "(progn (define-class sv-1 () (cv1 cv2) (iv1))
+                    (define-class sv-2 (sv-1) () (iv2))
+                    (define-class sv-3 (sv-2) (cv3) (iv3)))")
+  (is-equal '(42 42 42)
+            (eval-str "(progn (set-slot sv-1 'cv1 42)
+                              (list (get-slot sv-1 'cv1) (get-slot sv-2 'cv1) (get-slot sv-3 'cv1)))")
+            "set on the declaring class, seen by every subclass")
+  (is-equal '(99 99 99)
+            (eval-str "(progn (set-slot sv-3 'cv1 99)
+                              (list (get-slot sv-1 'cv1) (get-slot sv-2 'cv1) (get-slot sv-3 'cv1)))")
+            "and set through a subclass, seen by the declaring class")
+  ;; Diamond inheritance still finds one location.
+  (eval-str "(progn (define-class sv-top () (tv) ()) (define-class sv-l (sv-top) () ())
+                    (define-class sv-r (sv-top) () ())  (define-class sv-bot (sv-l sv-r) () ()))")
+  (is-equal '(3 3 3 3)
+            (eval-str "(progn (set-slot sv-bot 'tv 3)
+                              (list (get-slot sv-top 'tv) (get-slot sv-l 'tv)
+                                    (get-slot sv-r 'tv) (get-slot sv-bot 'tv)))")
+            "a diamond shares one location, not two")
+  (is-equal '(5 5)
+            (eval-str "(progn (define-class sv-d () ((cvd :initform 5)) ())
+                              (define-class sv-e (sv-d) () ())
+                              (list (get-slot sv-d 'cvd) (get-slot sv-e 'cvd)))")
+            ":initform on a class variable is shared too"))
+
+(deftest instances-reach-class-variables (:phase "cl3" :severity :serious)
+  ;; As in Smalltalk, a method can read and write its class variables through
+  ;; SELF.  An instance variable of the same name shadows the class variable.
+  (eval-str "(progn (define-class iv-1 () (cv) (iv))
+                    (define-class iv-2 (iv-1) () ())
+                    (defparameter iv-iu (make-instance iv-2))
+                    (set-slot iv-1 'cv 42))")
+  (is-equal 42 (eval-str "(get-slot iv-iu 'cv)")
+            "an instance reads a class variable")
+  (is-equal '(7 7) (eval-str "(progn (set-slot iv-iu 'cv 7)
+                                     (list (get-slot iv-1 'cv) (get-slot iv-iu 'cv)))")
+            "and writing through the instance sets the shared value")
+  (is-equal 3 (eval-str "(progn (set-slot iv-iu 'iv 3) (get-slot iv-iu 'iv))")
+            "an instance variable still takes precedence")
+  (signals-error (eval-str "(get-slot iv-iu 'no-such-slot)")
+                 "a name that is neither is still an error")
+  (is-equal 15 (eval-str "(progn (define-method bump iv-2 (n)
+                                   (set-slot self 'cv (+ (get-slot self 'cv) n)))
+                                 (bump iv-iu 8)
+                                 (get-slot iv-1 'cv))")
+            "a method reaches the class variable through SELF"))
 
 (deftest clos-methods-bind-self-in-any-package (:phase "cl3" :severity :serious)
   ;; DEFINE-METHOD binds the instance to SELF.  Unexported, that anaphor is a

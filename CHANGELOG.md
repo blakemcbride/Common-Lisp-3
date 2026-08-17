@@ -10,6 +10,28 @@ on one implementation only, which is why the suite now runs on all five.
 **Not backward compatible with images or fasls built by the previous version.**
 See *Upgrading* below.
 
+### Changed — class variables are shared, as in Smalltalk
+
+- **A class variable is one value shared by the class that declares it and
+  every subclass**, rather than a separate copy per class. Setting it through
+  a subclass sets what the declaring class reads, and the other way round. It
+  is still not visible above the class that declares it. The slots holding
+  class variables are now `:allocation :class`, which is CLOS's own mechanism
+  for exactly this; each class in the hierarchy previously inherited the
+  slot's shape but got its own value.
+
+- **An instance reaches its class variables.** `(get-slot instance 'cv)` and
+  `(set-slot instance 'cv v)` fall through to the class variables when the
+  name is not an instance variable, so a method can use them through `self`
+  as in Smalltalk. An instance variable of the same name still takes
+  precedence, and a name that is neither is still an error.
+
+- Working around a portability defect while doing so: CLHS 4.3.6 requires the
+  value of a slot shared in both the old and new class to be retained when a
+  class is redefined. SBCL, CCL and CLISP do; ECL and ABCL lose it, in pure
+  CLOS with none of this code involved. `DEFINE-CLASS` now saves the class
+  variables before redefining and restores them afterwards.
+
 ### Fixed — the CLOS layer
 
 - **A class can be redefined.** The `DEFCLASS` forms were the initial value of

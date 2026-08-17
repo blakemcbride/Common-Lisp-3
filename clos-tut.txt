@@ -36,13 +36,16 @@ A sub-class of my-class can be created as follows:
 This creates a class 'mysubclass' which is a sub-class of 'my-class',
 adds a class variable (slot) named 'cv2', and an instance variable
 (slot) named 'iv3'.  Because of inheritance, instances of mysubclass
-have three instance variables iv1, iv2 and iv3.  Mysubclass has class
-variables 'cv2' and 'cv1'.
+have three instance variables iv1, iv2 and iv3.  Mysubclass has a class
+variable 'cv2' and shares a class variable 'cv1' with the my-class
+class.
 
-A class variable is inherited in name but not in value: every class in
-the hierarchy has its own copy.  Setting 'cv1' on mysubclass leaves
-my-class' 'cv1' untouched, and a class variable that has not been set
-on a particular class is unbound there even when a parent has set it.
+As in Smalltalk, a class variable is one value shared by the class that
+declares it and every subclass beneath it -- not a copy per class.
+Setting 'cv1' through mysubclass changes the same value my-class reads,
+and the other way round.  A class variable is not visible above the
+class that declares it: 'cv2' belongs to mysubclass and below, and
+my-class knows nothing of it.
 
 2.  Creating instances
 
@@ -73,6 +76,25 @@ Set slot 'cv1' of class 'my-class' to 32:
 Get slot 'cv1' from class 'my-class':
 
 (get-slot my-class 'cv1)
+
+There is one 'cv1', shared down the hierarchy, so a subclass reads and
+writes the same value:
+
+(get-slot mysubclass 'cv1)      ->  32
+
+(set-slot mysubclass 'cv1 64)
+
+(get-slot my-class 'cv1)        ->  64
+
+An instance reaches its class variables too, which is what lets a method
+use them through 'self' (section 7):
+
+(get-slot i1 'cv1)              ->  64
+
+(set-slot i1 'cv1 70)           ; sets the one value the class shares
+
+An instance variable takes precedence over a class variable of the same
+name, so a name declared in both reaches the instance's own.
 
 
 5.  Creating an instance method
@@ -122,6 +144,17 @@ not written there.  A method taking nothing further has an empty list:
 
 (define-method getiv my-class ()
     (get-slot self 'iv1))
+
+Because an instance reaches its class variables, a method can keep
+per-class state through 'self'.  This counts every instance ever made of
+my-class or any of its subclasses, in one shared place:
+
+(define-class my-class () (population) (iv1 iv2))
+
+(set-slot my-class 'population 0)
+
+(define-method census my-class ()
+    (set-slot self 'population (+ (get-slot self 'population) 1)))
 
 define-method takes no qualifiers and dispatches on one argument.  Where
 you want :before, :after or :around, or dispatch on more than one
