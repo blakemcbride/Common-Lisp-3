@@ -1,5 +1,5 @@
 
-CLOS Tutorial when used with the clos-utils.lisp package.
+CLOS Tutorial for the layer over CLOS in Common Lisp 3 (clos-utils.lisp).
 
 Written by Blake McBride (blake@mcbridemail.com)
 
@@ -7,8 +7,9 @@ This tutorial assumes you know OO concepts coming from the Smalltalk,
 Objective-C, C++, Java, or C# world.  It also assumes you have a
 working knowledge of Common Lisp but little understanding of CLOS.
 
-This tutorial assumes you have loaded clos-utils.lisp like:
-    (load "clos-utils")
+This tutorial assumes you have loaded Common Lisp 3 like:
+    (load "cl3")
+    (use-package :cl3)
 
 1.  Class creation.
 
@@ -35,9 +36,13 @@ A sub-class of my-class can be created as follows:
 This creates a class 'mysubclass' which is a sub-class of 'my-class',
 adds a class variable (slot) named 'cv2', and an instance variable
 (slot) named 'iv3'.  Because of inheritance, instances of mysubclass
-would three instance variables iv1, iv2 and iv3.  Mysubclass has a
-class variable 'cv2' and shares a class variable 'cv1' with the
-my-class class.
+have three instance variables iv1, iv2 and iv3.  Mysubclass has class
+variables 'cv2' and 'cv1'.
+
+A class variable is inherited in name but not in value: every class in
+the hierarchy has its own copy.  Setting 'cv1' on mysubclass leaves
+my-class' 'cv1' untouched, and a class variable that has not been set
+on a particular class is unbound there even when a parent has set it.
 
 2.  Creating instances
 
@@ -98,7 +103,32 @@ The new method can be used as follows:
 
 (addcv my-class 42)
 
-7.  Other facilities
+7.  Creating a method with define-method
+
+Sections 5 and 6 use CLOS' own defmethod, which works and gives you all
+of CLOS.  define-method is a shorter form for the common case: a method
+on one class that wants to reach the instance.  It binds the instance to
+'self'.
+
+(define-method addiv my-class (val)
+    (+ (get-slot self 'iv1) val))
+
+It is used the same way:
+
+(addiv i1 72)
+
+The argument list holds only the arguments after the instance; 'self' is
+not written there.  A method taking nothing further has an empty list:
+
+(define-method getiv my-class ()
+    (get-slot self 'iv1))
+
+define-method takes no qualifiers and dispatches on one argument.  Where
+you want :before, :after or :around, or dispatch on more than one
+argument, use defmethod as in sections 5 and 6.
+
+
+8.  Other facilities
 
 Returns the class of an (class or instance) object
 
@@ -130,14 +160,14 @@ CLOS standard way of accessing instance slots:
 
 (setf (slot-value i1 'iv1) 32)
 
-8.  Create a class with default slot values:
+9.  Create a class with default slot values:
 
 (define-class newclass ()
     ((cv1 :initform 42))
     ((iv1 :initform 36)
      (iv2 :initform 11)))
 
-9.  Create a class with named initial values
+10.  Create a class with named initial values
 
 (define-class class2 () ()
    ((iv1 :initarg :val)))
@@ -149,7 +179,17 @@ To use do:
 This will create a new instance with iv1 set to 66.
 
      
-10.  Instance initialization method
+11.  Instance initialization method
 
-(define-method allocate-instance :after ((class meta-class1) &key)
-  ...)
+To run code whenever an instance is created, add an :after method to
+CLOS' initialize-instance.  That needs a qualifier, so it is written
+with defmethod rather than define-method:
+
+(define-class counter () () (n))
+
+(defmethod initialize-instance :after ((inst counter) &key)
+  (set-slot inst 'n 0))
+
+Every instance of counter then starts with n set to 0:
+
+(get-slot (make-instance counter) 'n)
