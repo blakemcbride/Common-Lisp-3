@@ -16,3 +16,7 @@ PLAN.md
 
 # Scratch area for the file-operation tests
 tests/scratch/
+
+# Code-RAG local index files (written by bld; machine-local, not part of the project)
+.mcp.json
+CLAUDE.local.md
