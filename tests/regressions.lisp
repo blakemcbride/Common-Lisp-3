@@ -265,6 +265,45 @@ same function name fails the second time."
             "for any COMMON-LISP name"))
 
 
+;; DEFINE-METHOD gave every method the lambda list (SELF &REST ARGS) so that
+;; one name could take different argument counts in different classes; that
+;; cost more than the rest of the call.  Each count now has its own generic
+;; function, and the behaviour must not change.
+(deftest define-method-arities (:phase "cl3" :severity :serious)
+  (eval-str "(progn (define-class dm-a () () ((v :initform 10)))
+                    (define-class dm-b () () ((v :initform 20)))
+                    (define-class dm-c (dm-a) () ())
+                    (define-method dm-add dm-a (x) (+ (get-slot self 'v) x))
+                    (define-method dm-add dm-b (x y) (+ (get-slot self 'v) x y))
+                    (define-method dm-opt dm-a (&optional (x 1)) (+ (get-slot self 'v) x)))")
+  (is-equal 11 (eval-str "(dm-add (make-instance dm-a) 1)") "one class, one count")
+  (is-equal 23 (eval-str "(dm-add (make-instance dm-b) 1 2)") "another class, another")
+  (is-equal 11 (eval-str "(dm-add (make-instance dm-c) 1)") "a subclass inherits")
+  (is-equal 11 (eval-str "(funcall #'dm-add (make-instance dm-a) 1)") "FUNCALL works")
+  (is-equal 23 (eval-str "(apply #'dm-add (make-instance dm-b) '(1 2))") "and APPLY")
+  (is-equal '(11 12) (eval-str "(lisp1 (let ((o (make-instance dm-a)))
+                                         (mapcar (lambda (x) (dm-add o x)) '(1 2))))")
+            "and converted code")
+  (is-equal '(11 15) (eval-str "(list (dm-opt (make-instance dm-a))
+                                      (dm-opt (make-instance dm-a) 5))")
+            "an &optional method takes either count")
+  (signals-error (eval-str "(dm-add (make-instance dm-a) 1 2)")
+                 "a count no method of the class takes is an error")
+  (is-equal 21 (eval-str "(progn (define-method dm-add dm-c (x)
+                                   (+ 10 (call-next-method)))
+                                 (dm-add (make-instance dm-c) 1))")
+            "CALL-NEXT-METHOD reaches the superclass method"))
+
+(deftest define-method-joins-a-defmethod (:phase "cl3" :severity :minor)
+  ;; clos-tut.txt defines ADDIV with DEFMETHOD and then with DEFINE-METHOD;
+  ;; the second was rejected, its lambda list not congruent with the first.
+  (is-equal 82 (eval-str "(progn (define-class dj-c () () ((v :initform 10)))
+                                 (defmethod dj-add ((o dj-c) x) (+ (get-slot o 'v) x))
+                                 (define-method dj-add dj-c (x) (+ (get-slot self 'v) x 0))
+                                 (dj-add (make-instance dj-c) 72))")
+            "DEFINE-METHOD adds to a generic function DEFMETHOD made"))
+
+
 ;;; ==================================================================
 ;;; Phase 3 -- quasiquote
 ;;; ==================================================================

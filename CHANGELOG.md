@@ -10,6 +10,37 @@ on one implementation only, which is why the suite now runs on all five.
 **Not backward compatible with images or fasls built by the previous version.**
 See *Upgrading* below.
 
+### Changed — the layer over CLOS is fast
+
+The objects workload of `bench/program.lisp` ran 8x slower than plain CLOS;
+it is now about 1.5x.
+
+- **Class-side state is held in CLOS shared slots of the class itself**, not
+  in a parallel `CLASS-<name>` class. A class variable is a shared slot
+  declared once, so CLOS gives the hierarchy one location; a class-instance
+  variable is redeclared in each subclass, so CLOS gives each class its own.
+  An instance reaches both as ordinary slots, and the class side is read
+  through an instance made by `ALLOCATE-INSTANCE`. The parallel classes, and
+  the `CLASS-<name>` variables naming them, are gone.
+- **`GET-SLOT` and `SET-SLOT` are a `SLOT-VALUE`.** They called
+  `SLOT-EXISTS-P` on every access; now, with a constant slot name, a compiler
+  macro makes them an inline `SLOT-VALUE` behind a cheap class-or-instance
+  test. A class variable reached through an instance costs the same as an
+  instance variable.
+- **`DEFINE-METHOD` has fixed lambda lists.** Every method had the lambda list
+  `(SELF &REST ARGS)` and applied its body to them, so one name could take
+  different argument counts in different classes. Each count now has its own
+  generic function, and a call with a known count goes straight to it; the
+  name is a function choosing by count, for `FUNCALL`, `APPLY` and use as a
+  value. Methods with `&OPTIONAL`, `&REST` or `&KEY` still work. A count no
+  method of the class takes is a clear error.
+- **`DEFINE-METHOD` adds to a generic function `DEFMETHOD` made.** It was
+  rejected, its lambda list not congruent — which section 8 of
+  `clos-tut.txt` did, so the tutorial did not run as written.
+- An instance variable and a class variable of the same name in one class:
+  the instance variable wins, as before, but the class side no longer has a
+  separate value under that name.
+
 ### Changed — a defined function is a real function
 
 - **A `DEFINE` whose value is a function is also the name's function
@@ -54,8 +85,7 @@ Found by `bench/program.lisp`, which writes one program both ways.
 - `bench/program.lisp` and `make bench-program` (SBCL): one program written
   in plain Common Lisp and in Common Lisp 3 — recursion, higher-order
   functions, sorting with a predicate, objects. The single namespace costs
-  nothing measurable; the layer over CLOS costs about 8x, from `GET-SLOT`,
-  `SET-SLOT` and `DEFINE-METHOD`'s `&rest` and `APPLY`.
+  nothing measurable; the layer over CLOS about 1.5x (it was 8x; see above).
 
 ### Changed — class variables are shared, as in Smalltalk
 
@@ -105,9 +135,6 @@ Found by `bench/program.lisp`, which writes one program both ways.
 - **Asking a class CLOS-layer questions it cannot answer says so.** `GET-SLOT`
   on a class `DEFINE-CLASS` never made reached `SLOT-VALUE` on `NIL`; it now
   reports that the class has no class variables and names `DEFINE-CLASS`.
-
-- **The parallel class name is interned beside the class name**, rather than in
-  whatever package happened to be current when the macro was expanded.
 
 - **The system loads from anywhere.** `cl3.lisp` loaded its parts by bare
   relative name, so `(load "…/cl3")` worked only when the current directory

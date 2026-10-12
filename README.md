@@ -134,8 +134,7 @@ call on all five implementations.
 `make bench-program` (SBCL) runs one program written both in plain Common
 Lisp and in Common Lisp 3: recursion, higher-order functions, sorting with
 a predicate, and objects.  The single namespace costs nothing measurable;
-the layer over CLOS costs about 8x, in `get-slot`, `set-slot` and
-`define-method`.
+the layer over CLOS about 1.5x, against plain CLOS with accessors.
 
 ## Needed
 

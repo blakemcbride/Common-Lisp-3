@@ -28,9 +28,10 @@ variables and slots easy and clear.
 
 This package does the following:
 
-1.  When creating a class hierarchy, a corresponding meta class
-hierarchy is created making the specification of class and instance
-variables (slots) and class and instance methods easy and clear.
+1.  A class is created with its class variables and instance variables
+(slots) together, making class and instance variables and class and
+instance methods easy and clear.  The class variables are CLOS shared
+slots of the class itself, reachable from the class or any instance.
 
 2.  Class creation creates global variables with the created class
 name containing the class.

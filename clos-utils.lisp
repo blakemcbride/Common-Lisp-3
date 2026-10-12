@@ -5,93 +5,110 @@
 ;        Blake McBride
 ;        blake@mcbridemail.com
 ;
-;  A layer over CLOS giving classes their own class variables -- slots
-;  belonging to the class rather than to its instances.
-;
-;  Each class defined here gets a parallel class, CLASS-<name>, whose
-;  hierarchy mirrors the primary one and whose slots are the class
-;  variables.  One instance of that parallel class holds the values, and
-;  *CLASS-INSTANCES* maps the primary class object to it.
+;  A layer over CLOS giving classes their own class-side state, and a
+;  shorter way to write a method.
 ;
 ;  Smalltalk has two kinds of class-side state, and so does this:
 ;
 ;    class variables           one value, shared by the class that declares
 ;                              it and every subclass.  Setting it through a
 ;                              subclass, or through an instance, sets the
-;                              value the whole hierarchy sees.  Held in a
-;                              :allocation :class slot of the parallel
-;                              class, which is what makes it one location.
+;                              value the whole hierarchy sees.
 ;
 ;    class-instance variables  declared once, but every class in the
 ;                              hierarchy gets its own value -- a per-class
-;                              counter or registry.  Held in an ordinary
-;                              slot of the parallel class, of which there
-;                              is one instance per class.
+;                              counter or registry.
 ;
-;  Neither is visible above the class that declares it.
+;  Neither is visible above the class that declares it.  Both are CLOS
+;  shared slots of the class itself; see DEFINE-CLASS.
 ;
-;  The parallel class exists so that a class variable can be read from a
-;  class object with no instance in hand.  Reaching a :allocation :class
-;  slot directly from a class needs CLASS-PROTOTYPE, which is MOP rather
-;  than ANSI; an inert instance is portable.  It also keeps the user's
-;  INITIALIZE-INSTANCE methods from firing when a class is defined.
-;
-
 (in-package :cl3)
 
+;  Class-side state lives in the class itself, as CLOS shared slots
+;  (:allocation :class), so that an instance reaches it as it reaches any
+;  slot -- an ordinary SLOT-VALUE, which the compiler optimises.  It used to
+;  live in a parallel class, reached from an instance by asking SLOT-EXISTS-P
+;  on every access, which made GET-SLOT eight times the cost of an accessor.
+;
+;  A class variable is a shared slot declared once, so CLOS gives the
+;  declaring class and every subclass the one location.  A class-instance
+;  variable is a shared slot declared afresh in every class below, which CLOS
+;  gives a location of its own: DEFINE-CLASS redeclares the ones a class
+;  inherits.  The class side is reached through an instance made by
+;  ALLOCATE-INSTANCE, which shares those slots and runs no initialisation.
+
 (defvar *class-instances* (make-hash-table :test #'eq)
-  "Primary class object -> the instance holding its class variables.")
+  "Class object -> the uninitialised instance through which GET-SLOT and
+SET-SLOT reach its class variables.")
 
-(defun parallel-class-name (name)
-  "The name of the parallel class holding NAME's class variables.
+(defvar *class-instance-variables* (make-hash-table :test #'eq)
+  "Class name -> the class-instance variable specifications it has, its own
+and those it inherits, which every subclass must declare again.")
 
-Interned beside NAME rather than in whatever package happens to be current
-when the macro is expanded, so that defining a class from another package
-does not scatter the parallel names."
-  (intern (concatenate 'string "CLASS-" (string name))
-          (or (and (symbolp name) (symbol-package name)) *package*)))
+(defun slot-spec-name (spec)
+  (if (consp spec) (car spec) spec))
+
+(defun inherited-class-instance-variables (supers own)
+  "The class-instance variable specifications SUPERS have, nearest first,
+less any of the names in OWN."
+  (let ((result '()))
+    (dolist (super supers (nreverse result))
+      (dolist (spec (gethash super *class-instance-variables*))
+        (let ((name (slot-spec-name spec)))
+          (unless (or (member name own)
+                      (find name result :key #'slot-spec-name))
+            (push spec result)))))))
 
 (defmacro define-class (name super-class-list class-variables instance-variables
                         &optional class-instance-variables)
-  "Define a class, its parallel class-variable class, and the holder for them.
+  "Define a class with class variables, instance variables and, optionally,
+class-instance variables.
 
 CLASS-VARIABLES are shared with every subclass: one value for the hierarchy.
 CLASS-INSTANCE-VARIABLES are declared once but give every class its own
-value.  Both are read and written with GET-SLOT and SET-SLOT on the class,
-and reached from an instance when the name is not an instance variable.
+value.  Both are read and written with GET-SLOT and SET-SLOT on the class or
+on any instance.  An instance variable of the same name takes precedence.
 The fifth argument is optional, so a four-argument call means what it always
 did.
 
-Re-evaluating this redefines the class.  The DEFCLASS forms are evaluated
-every time -- they used to be the initial value of a DEFVAR, which does not
-re-evaluate once the variable is bound, so editing a class and reloading
-silently kept the old definition while resetting its class variables.  The
-holder is now kept across a redefinition too: CLOS updates it for the new
-slots, and the values of the class variables that survive the change survive
-with it."
-  (let ((parallel (parallel-class-name name))
-        (parallel-supers (mapcar #'parallel-class-name super-class-list)))
+Re-evaluating this redefines the class, and the class-side values that
+survive the change keep their values."
+  (let* ((ivs (mapcar #'slot-spec-name instance-variables))
+         (unshadowed (lambda (specs)
+                       (remove-if (lambda (spec) (member (slot-spec-name spec) ivs))
+                                  specs)))
+         (own-civs (funcall unshadowed class-instance-variables))
+         (all-civs (append own-civs
+                           (funcall unshadowed
+                                    (inherited-class-instance-variables
+                                     super-class-list
+                                     (append ivs
+                                             (mapcar #'slot-spec-name own-civs)
+                                             (mapcar #'slot-spec-name class-variables))))))
+         (cvs (funcall unshadowed class-variables))
+         (class-side (append (mapcar #'slot-spec-name cvs)
+                             (mapcar #'slot-spec-name all-civs))))
     `(progn
-       ;  Known as variables while the rest of the file is compiled, not only
+       ;  Known as a variable while the rest of the file is compiled, not only
        ;  once it is loaded: DEFPARAMETER promises that on some implementations
        ;  but not others, and without it single-namespace code naming the class
        ;  takes the name for a forward reference to a DEFINE.
        (eval-when (:compile-toplevel)
-         (proclaim '(special ,name ,parallel)))
+         (proclaim '(special ,name)))
+       ;  For subclasses, which may be defined in the same file.
+       (eval-when (:compile-toplevel :load-toplevel :execute)
+         (setf (gethash ',name *class-instance-variables*) ',all-civs))
        ;  Captured before the DEFCLASS below, restored after it; see
        ;  *SAVED-CLASS-VARIABLES*.
        (setf (gethash ',name *saved-class-variables*)
-             (class-variable-values (find-class ',name nil)
-                                    ',(class-variable-names class-variables)))
-       (defclass ,parallel ,parallel-supers
-         ,(append (mapcar #'shared-slot-spec class-variables)
-                  (mapcar #'per-class-slot-spec class-instance-variables)))
-       (defclass ,name ,super-class-list ,instance-variables)
-       (defparameter ,parallel (find-class ',parallel))
+             (class-variable-values (find-class ',name nil) ',class-side))
+       (defclass ,name ,super-class-list
+         (,@instance-variables
+          ,@(mapcar #'shared-slot-spec cvs)
+          ,@(mapcar #'shared-slot-spec all-civs)))
        (defparameter ,name (find-class ',name))
        (unless (gethash ,name *class-instances*)
-         (setf (gethash ,name *class-instances*)
-               (make-instance (find-class ',parallel))))
+         (setf (gethash ,name *class-instances*) (allocate-instance ,name)))
        (restore-class-variables ,name (gethash ',name *saved-class-variables*))
        (remhash ',name *saved-class-variables*)
        ,name)))
@@ -102,26 +119,15 @@ with it."
 CLHS 4.3.6 says the value of a slot shared in both the old and the new class
 is retained when a class is redefined.  SBCL, CCL and CLISP do that; ECL and
 ABCL lose it, in pure CLOS with none of this code involved.  DEFINE-CLASS
-therefore saves the class variables before redefining and puts them back
-afterwards, so a class variable survives a redefinition everywhere.")
+therefore saves the class-side values before redefining and puts them back
+afterwards, so they survive a redefinition everywhere.")
 
 (defun shared-slot-spec (spec)
-  "SPEC as a slot of the parallel class holding a class variable: one
-location for the whole hierarchy.  An explicit :allocation is left alone, so
-a caller who knows what the parallel class is can say what they mean."
+  "SPEC as a shared slot.  An explicit :allocation is left alone."
   (let ((spec (if (consp spec) spec (list spec))))
     (if (member :allocation spec)
         spec
         (append spec '(:allocation :class)))))
-
-(defun per-class-slot-spec (spec)
-  "SPEC as a slot of the parallel class holding a class-instance variable:
-one location per class, since there is one parallel instance per class."
-  (if (consp spec) spec (list spec)))
-
-(defun class-variable-names (specs)
-  "The names in a list of slot specifications."
-  (mapcar (lambda (spec) (if (consp spec) (car spec) spec)) specs))
 
 (defun class-variable-values (class names)
   "An alist of the bound values among NAMES for CLASS, or NIL."
@@ -147,33 +153,167 @@ one location per class, since there is one parallel instance per class."
       (error "~s has no class variables: it was not defined by DEFINE-CLASS."
              cls)))
 
+(defmacro class-object-p (object)
+  "True when OBJECT is a class rather than an instance.  Every class
+DEFINE-CLASS makes is a STANDARD-CLASS, and comparing CLASS-OF is several
+times cheaper than (TYPEP OBJECT 'CLASS), which is most of what a slot
+access cost on SBCL."
+  `(eq (class-of ,object) (load-time-value (find-class 'standard-class))))
+
 (defun get-slot (obj slot)
   "The value of SLOT in OBJ, which may be an instance or a class.
 
 An instance reaches its own instance variables first and then its class
 variables, so that a method can read either through SELF, as in Smalltalk.
-An instance variable shadows a class variable of the same name."
-  (cond ((typep obj 'standard-class) (slot-value (get-class-object obj) slot))
-        ((slot-exists-p obj slot)    (slot-value obj slot))
-        (t (slot-value (get-class-object (class-of obj)) slot))))
+An instance variable shadows a class variable of the same name.  Both are
+slots of the instance, so this is SLOT-VALUE; a class is read through the
+instance kept for it."
+  (if (class-object-p obj)
+      (slot-value (get-class-object obj) slot)
+      (slot-value obj slot)))
 
 (defun set-slot (obj slot val)
   "Set SLOT in OBJ to VAL.  Resolved as GET-SLOT resolves it, so setting a
 class variable through an instance sets the one value the class shares."
-  (cond ((typep obj 'standard-class)
-         (setf (slot-value (get-class-object obj) slot) val))
-        ((slot-exists-p obj slot)
-         (setf (slot-value obj slot) val))
-        (t (setf (slot-value (get-class-object (class-of obj)) slot) val))))
+  (if (class-object-p obj)
+      (setf (slot-value (get-class-object obj) slot) val)
+      (setf (slot-value obj slot) val)))
+
+;  With the slot name a constant, as it nearly always is, an instance's slot is
+;  a SLOT-VALUE the compiler can see, which SBCL makes as fast as an accessor.
+
+(defun quoted-symbol-p (form)
+  (and (consp form) (eq (car form) 'quote) (consp (cdr form))
+       (symbolp (cadr form)) (null (cddr form))))
+
+(define-compiler-macro get-slot (&whole form obj slot)
+  (if (quoted-symbol-p slot)
+      (let ((o (gensym "OBJ")))
+        `(let ((,o ,obj))
+           (if (class-object-p ,o)
+               (slot-value (get-class-object ,o) ,slot)
+               (slot-value ,o ,slot))))
+      form))
+
+(define-compiler-macro set-slot (&whole form obj slot val)
+  (if (quoted-symbol-p slot)
+      (let ((o (gensym "OBJ")) (v (gensym "VAL")))
+        `(let ((,o ,obj) (,v ,val))
+           (if (class-object-p ,o)
+               (setf (slot-value (get-class-object ,o) ,slot) ,v)
+               (setf (slot-value ,o ,slot) ,v))))
+      form))
+
+;  ---- methods ---------------------------------------------------------
+;
+;  DEFINE-METHOD lets one name take a different number of arguments in
+;  different classes, which a single CLOS generic function cannot: its methods
+;  must agree on their lambda lists.  It used to give every method the lambda
+;  list (SELF &REST ARGS) and APPLY its body to them, which cost more than the
+;  rest of a method call together.
+;
+;  Each argument count now has a generic function of its own, hidden in
+;  CL3-CELLS, with a fixed lambda list.  A call whose argument count is known
+;  when it is compiled -- nearly every call -- goes straight to it through a
+;  compiler macro.  NAME itself is a function choosing by argument count, for
+;  FUNCALL, APPLY and use as a value.  A method with &OPTIONAL, &REST or &KEY
+;  goes on one more, variadic, generic function, which a call reaches when no
+;  fixed-count method applies.
+
+(defvar *method-arities* (make-hash-table :test #'eq)
+  "Name -> the argument counts DEFINE-METHOD has given it fixed methods for.
+Recorded at compile time too, for the compiler macro.")
+
+(defun method-gf-name (name arity)
+  "The hidden generic function for NAME's methods taking ARITY arguments
+after the instance, or NIL for its variadic methods."
+  (intern (format nil "METHOD ~a::~a/~a"
+                  (let ((p (symbol-package name))) (if p (package-name p) "#"))
+                  (symbol-name name)
+                  (or arity "*"))
+          "CL3-CELLS"))
+
+(defun note-method-arity (name arity)
+  (when arity
+    (pushnew arity (gethash name *method-arities*)))
+  name)
+
+(defun fixed-arg-list-p (arg-list)
+  (notany (lambda (x) (member x lambda-list-keywords)) arg-list))
+
+(defun foreign-generic-function-p (name)
+  "True when NAME is a generic function DEFINE-METHOD did not make, such as
+one DEFMETHOD made.  DEFINE-METHOD then adds an ordinary method to it."
+  (and (fboundp name)
+       (not (get name 'define-method))
+       (typep (fdefinition name) 'generic-function)))
+
+(defun no-method-error (name self args)
+  (error "~s has no method for ~s taking ~d argument~:p after the instance."
+         name self (length args)))
+
+(defun call-variadic-method (name self args)
+  "Call NAME's variadic method for SELF, if it has one."
+  (let ((gf (method-gf-name name nil)))
+    (if (and (fboundp gf)
+             (compute-applicable-methods (fdefinition gf) (cons self args)))
+        (apply gf self args)
+        (no-method-error name self args))))
+
+(defun install-method-dispatcher (name)
+  "Make NAME the function that chooses a method by argument count."
+  (unless (get name 'define-method)
+    (when (fboundp name)
+      (error "DEFINE-METHOD: ~s is already a function or macro, which a ~
+              method of that name would replace." name))
+    (setf (get name 'define-method) t)
+    (setf (fdefinition name)
+          (lambda (self &rest args)
+            (let ((gf (method-gf-name name (length args))))
+              (if (fboundp gf)
+                  (apply gf self args)
+                  (call-variadic-method name self args))))))
+  name)
+
+(defun expand-method-call (form name)
+  "FORM, a call to NAME, as a direct call to the generic function for its
+argument count, when that is known to exist."
+  (let* ((args (if (eq (car form) 'funcall) (cddr form) (cdr form)))
+         (n (1- (length args))))
+    (if (and (>= n 0) (member n (gethash name *method-arities*)))
+        (cons (method-gf-name name n) args)
+        form)))
 
 (defmacro define-method (method-name class-name arg-list &rest body)
-  "define-method defines a fixed argument method and associates it to a variable argument generic.
-   This allows the same method name in different classes to have a different number of fixed arguments.
+  "Define a method of METHOD-NAME for instances of CLASS-NAME, taking the
+arguments in ARG-LIST after the instance, which the body reaches as SELF.
 
-   The instance is bound to SELF, which cl3.lisp exports for that reason: a
-   method body written in another package would otherwise refer to its own
-   SELF rather than this one."
-  (let ((alist (gensym)))
-    `(defmethod ,method-name ((self ,class-name) &rest ,alist)
-       (apply #'(lambda (self ,@arg-list) ,@body)
-	      (cons self ,alist)))))
+The same name may take a different number of arguments in different classes.
+When METHOD-NAME is already a generic function made some other way, such as
+by DEFMETHOD, the method is added to it as DEFMETHOD would add it.
+
+SELF is exported by cl3.lisp: a method body written in another package would
+otherwise refer to its own SELF rather than this one."
+  (if (foreign-generic-function-p method-name)
+      `(defmethod ,method-name ((self ,class-name) ,@arg-list) ,@body)
+      (let* ((arity (and (fixed-arg-list-p arg-list) (length arg-list)))
+             (gf (method-gf-name method-name arity))
+             (whole (gensym "FORM")))
+        `(progn
+           (eval-when (:compile-toplevel :load-toplevel :execute)
+             (note-method-arity ',method-name ',arity))
+           ,(if arity
+                `(defmethod ,gf ((self ,class-name) ,@arg-list) ,@body)
+                (let ((rest (gensym "ARGS")))
+                  `(defmethod ,gf ((self ,class-name) &rest ,rest)
+                     (apply #'(lambda (self ,@arg-list) ,@body) self ,rest))))
+           ;  A class with no method for this count may have a variadic one.
+           ,@(when arity
+               (let ((vars (loop repeat arity collect (gensym "ARG"))))
+                 `((defmethod ,gf ((self t) ,@vars)
+                     (call-variadic-method ',method-name self (list ,@vars))))))
+           (install-method-dispatcher ',method-name)
+           (define-compiler-macro ,method-name (&whole ,whole &rest args)
+             (declare (ignore args))
+             (expand-method-call ,whole ',method-name))
+           ',method-name))))
