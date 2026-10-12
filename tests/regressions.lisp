@@ -179,6 +179,14 @@ same function name fails the second time."
       (write-line "(in-package \"CL3-USER\")" s)
       (write-line "(define p12-add (lambda (a b) (+ a b)))" s)
       (write-line "(define p12-use (lambda () (p12-add 3 4)))" s)
+      (write-line "(define p12-fact (lambda (n) (if (< n 2) 1 (* n (p12-fact (- n 1))))))" s)
+      (write-line "(define p12-even (lambda (n) (if (= n 0) t (p12-odd (- n 1)))))" s)
+      (write-line "(define p12-odd (lambda (n) (if (= n 0) nil (p12-even (- n 1)))))" s)
+      (write-line "(define p12-map (lambda (xs) (mapcar p12-sq xs)))" s)
+      (write-line "(define p12-sq (lambda (n) (* n n)))" s)
+      (write-line "(define-class p12-c () () ((v :initform 9)))" s)
+      (write-line "(define-method p12-v p12-c () (get-slot self 'v))" s)
+      (write-line "(define p12-get (lambda () (p12-v (make-instance p12-c))))" s)
       (write-line "(define-meth p12-m ((a integer)) (* a 2))" s)
       (write-line "(define-meth p12-m ((a string)) :str)" s))
     (multiple-value-bind (output warnings failure)
@@ -189,8 +197,72 @@ same function name fails the second time."
       (is-equal nil warnings   "and no warnings")
       (when output (cl:load output)))
     (is-equal 7      (eval-str "(p12-use)")   "a compiled definition runs")
+    (is-equal 120    (eval-str "(p12-fact 5)") "a compiled recursive definition runs")
+    (is-equal t      (eval-str "(p12-even 6)") "compiled mutual recursion runs")
+    (is-equal '(4 9) (eval-str "(p12-map '(2 3))") "a compiled later value is read")
+    (is-equal 9      (eval-str "(p12-get)")     "a compiled method is called by name")
     (is-equal 42     (eval-str "(p12-m 21)")  "a compiled method dispatches")
     (is-equal :str   (eval-str "(p12-m \"x\")"))))
+
+
+;; A value referring to its own name was compiled before the name became a
+;; symbol macro, so the reference was to a free variable, unbound at run time.
+(deftest recursive-definitions (:phase "cl3" :severity :critical)
+  (eval-str "(define rd-fib (lambda (n) (if (< n 2) n (+ (rd-fib (- n 1)) (rd-fib (- n 2))))))")
+  (is-equal 55 (eval-str "(rd-fib 10)") "a self-recursive definition runs")
+  ;; A call to a name defined further on was a free variable too.
+  (eval-str "(define rd-even (lambda (n) (if (= n 0) t (rd-odd (- n 1)))))")
+  (eval-str "(define rd-odd (lambda (n) (if (= n 0) nil (rd-even (- n 1)))))")
+  (is-equal t (eval-str "(rd-even 10)") "mutually recursive definitions run")
+  (eval-str "(define rd-later (lambda (n) (rd-defined-after n)))")
+  (eval-str "(define rd-defined-after (lambda (n) (* n 2)))")
+  (is-equal 8 (eval-str "(rd-later 4)") "a call to a later definition runs")
+  (eval-str "(define rd-apply (lambda (xs) (mapcar rd-doubler xs)))")
+  (eval-str "(define rd-doubler (lambda (n) (* n 2)))")
+  (is-equal '(2 4) (eval-str "(rd-apply '(1 2))") "a later definition passed as a value")
+  (eval-str "(define rd-never (lambda () (rd-undefined 1)))")
+  (is-equal 'cl3-user::rd-undefined
+            (handler-case (eval-str "(rd-never)")
+              (unbound-variable (c) (cell-error-name c)))
+            "a name never defined is reported by its own name")
+  (is-equal 5 (eval-str "(let ((rd-free 5)) rd-free)")
+            "a lexical binding still shadows"))
+
+
+;; Inside a DEFINE every call head that was not a COMMON-LISP function was
+;; taken for a single-namespace variable, so nothing defined by DEFUN or
+;; DEFINE-METHOD -- nor GET-SLOT itself -- could be called by name.
+(deftest ordinary-functions-are-callable (:phase "cl3" :severity :critical)
+  (eval-str "(defun of-twice (n) (* n 2))")
+  (eval-str "(define of-use (lambda (n) (of-twice n)))")
+  (is-equal 10 (eval-str "(of-use 5)") "an earlier DEFUN is called")
+  (eval-str "(define of-early (lambda (n) (of-later n)))")
+  (eval-str "(defun of-later (n) (+ n 1))")
+  (is-equal 6 (eval-str "(of-early 5)") "a later DEFUN is called")
+  (eval-str "(define of-map (lambda (xs) (mapcar of-twice xs)))")
+  (is-equal '(2 4) (eval-str "(of-map '(1 2))") "a DEFUN is a value")
+  (is-equal 7 (eval-str "(progn (define-class of-c () () ((v :initform 7)))
+                                (define-method of-v of-c () (get-slot self 'v))
+                                (define of-get (lambda (o) (of-v o)))
+                                (of-get (make-instance of-c)))")
+            "a DEFINE-METHOD method is called")
+  (is-equal 3 (eval-str "(progn (define of-gs (lambda (o) (set-slot o 'v 3) (get-slot o 'v)))
+                                (of-gs (make-instance of-c)))")
+            "GET-SLOT and SET-SLOT are called"))
+
+
+;; A COMMON-LISP function could be called but not passed: (reduce + xs) read
+;; the REPL's + and (mapcar car xs) an unbound variable.
+(deftest builtin-functions-are-values (:phase "cl3" :severity :serious)
+  (is-equal 6 (eval-str "(lisp1 (reduce + '(1 2 3)))") "+ is the function")
+  (is-equal 24 (eval-str "(lisp1 (reduce * '(2 3 4)))") "so is *")
+  (is-equal '(1 3) (eval-str "(lisp1 (mapcar car '((1 2) (3 4))))") "CAR is a value")
+  (eval-str "(define bf-apply (lambda (f a b) (f a b)))")
+  (is-equal 7 (eval-str "(lisp1 (bf-apply + 3 4))") "and can be passed and called")
+  (is-equal '(9) (eval-str "(lisp1 (let ((list '(9))) list))")
+            "a local binding of the name still wins")
+  (is-equal 3 (eval-str "(lisp1 (let ((car 3)) car))")
+            "for any COMMON-LISP name"))
 
 
 ;;; ==================================================================
@@ -742,11 +814,15 @@ same function name fails the second time."
              "and the errors were reported rather than swallowed")))
 
 (deftest repl-keeps-history-variables (:phase "5.5" :severity :minor)
-  (let ((text (rep-session "(+ 1 2) (* * 10)")))
-    (is-true (search "30" text) "* holds the previous result"))
-  (let ((text (rep-session "(list 1 2) (length +)")))
-    ;; + is the previous FORM, (list 1 2), whose length is 3
-    (is-true (search "3" text) "+ holds the previous form")))
+  ;; * and + themselves are the arithmetic in converted code (see
+  ;; builtin-functions-are-values), so history is reached through the others.
+  (let ((text (rep-session "(+ 1 2) 5 (* ** 10)")))
+    (is-true (search "30" text) "** holds the result before last"))
+  (let ((text (rep-session "(list 1 2) 5 (length ++)")))
+    ;; ++ is the form before last, (list 1 2), whose length is 3
+    (is-true (search "3" text) "++ holds the form before last"))
+  (let ((text (rep-session "(reduce * '(2 3 4))")))
+    (is-true (search "24" text) "* typed at the REPL is the function")))
 
 (deftest repl-prints-all-values (:phase "5.1" :severity :minor)
   (let ((text (rep-session "(floor 7 2)")))

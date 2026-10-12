@@ -223,9 +223,12 @@ duplicate definition -- which CCL reports and counts as a compilation
 failure."
   (let ((cell (cell-symbol name))
         (rest (gensym "ARGS")))
+    ;  The symbol macro comes before the assignment, so that a value referring
+    ;  to NAME -- a recursive function, above all -- compiles to a read of the
+    ;  cell rather than of a free variable NAME, unbound at run time.
     (append (list `(defvar ,cell)
-                  `(setf ,cell ,value-form)
-                  `(define-symbol-macro ,name ,cell))
+                  `(define-symbol-macro ,name ,cell)
+                  `(setf ,cell ,value-form))
             (when dispatch
               (list (dispatch-macro-form name rest arity))))))
 
@@ -1036,11 +1039,96 @@ specializer, which is evaluated and so is converted."
     (cons 'loop (nreverse out))))
 
 
+;  ---- forward references ----------------------------------------------
+;
+;  A name that nothing has defined yet is taken to be a DEFINE further on, as
+;  in mutual recursion.  Left alone it would be a free variable, read at run
+;  time from a symbol that DEFINE never sets.  Instead it is given, at once,
+;  a global symbol macro for the cell its DEFINE will fill -- the cell symbol
+;  is fixed by the name -- so the code compiled now reads that cell.  Being a
+;  symbol macro, it is shadowed by any lexical binding of the name, including
+;  one this converter cannot see, such as a DEFUN parameter around a LISP1
+;  form.  When the DEFINE arrives it replaces the symbol macro with its own.
+;
+;  Until then the expansion checks that the cell is bound, so that a name
+;  never defined is reported under its own name, not the cell's.  A name that
+;  is instead defined as an ordinary function is that function.  The check is
+;  expanded inline, so compiled code does not need Common Lisp 3 to run it.
+
+(defmacro forward-reference (cell name)
+  ;  A name that turns out to be an ordinary function -- a DEFUN or a
+  ;  DEFINE-METHOD further on -- is that function, as in any single namespace.
+  `(cond ((boundp ',cell) (symbol-value ',cell))
+         ((and (fboundp ',name) (not (macro-function ',name)))
+          (fdefinition ',name))
+         (t (error 'unbound-variable :name ',name))))
+
+(define-setf-expander forward-reference (cell name)
+  (declare (ignore name))
+  (let ((new (gensym "NEW")))
+    (values '() '() (list new)
+            `(setf (symbol-value ',cell) ,new)
+            `(symbol-value ',cell))))
+
+(defvar *known-functions* (make-hash-table :test #'eq)
+  "Names that will be functions once the file being compiled is loaded.
+COMPILE-FILE does not define a function at compile time, so a converter asking
+FBOUNDP of a method defined earlier in the same file is told no.  Definers in
+the layer over CLOS note their names here at compile time instead.")
+
+(defun note-function (name)
+  (setf (gethash name *known-functions*) t)
+  name)
+
+(defun known-function-p (name)
+  (or (fboundp name) (gethash name *known-functions*)))
+
+(defun forward-reference-p (x env)
+  "True when X, a free variable here, names nothing yet."
+  (and (symbolp x)
+       x
+       (not (keywordp x))
+       (not (constantp x))
+       (not (env-kind x env))
+       ;  A symbol from a macroexpansion, or from COMMON-LISP, is not one the
+       ;  user could mean to DEFINE later.
+       (symbol-package x)
+       (not (eq (symbol-package x) (find-package "COMMON-LISP")))
+       (symbol-accessible-p x)
+       ;  Already a symbol macro: a definition, or a forward reference.
+       (not (nth-value 1 (macroexpand-1 x)))
+       (not (globally-special-p x))))
+
+(defun builtin-function-value-p (x env)
+  "True when X, a free variable here, is a COMMON-LISP function to be read as
+its value -- (reduce + xs) and (mapcar car pairs), as in any single namespace.
+
++ - * and / are also the REPL's history variables, and so special; in
+converted code they are the arithmetic.  Nothing else in COMMON-LISP is both a
+variable and a function.  A local binding of the name wins, as everywhere."
+  (and (symbolp x)
+       (not (env-kind x env))
+       (is-builtin x)
+       (fboundp x)
+       (not (macro-function x))
+       (not (special-operator-p x))
+       (or (member x '(+ - * /))
+           (not (globally-special-p x)))))
+
+(defun convert-atom (x env)
+  (cond ((builtin-function-value-p x env)
+         (list 'function x))
+        (t
+         (when (forward-reference-p x env)
+           (eval `(define-symbol-macro ,x (forward-reference ,(cell-symbol x) ,x))))
+         x)))
+
+
 ;  ---- the walker itself ----------------------------------------------
 
 (defun convert (x &optional env)
   (cond
-    ((atom x) x)
+    ((atom x) (convert-atom x env))
     ((consp (car x))
      ;  A form in head position.  ((lambda ...) ...) is a call Common Lisp
      ;  accepts as written; anything else evaluates to the function.
@@ -1096,6 +1184,11 @@ specializer, which is evaluated and so is converted."
       ;  Without this, an implementation internal reached by expanding a macro
       ;  would be rewritten into a FUNCALL of an unbound variable.
       ((and (fboundp head) (not (symbol-accessible-p head)))
+       (cons head (convert-each (cdr x) env)))
+      ;  An ordinary function: a DEFUN, a generic function, or Common Lisp 3's
+      ;  own GET-SLOT.  A DEFINE'd name never gets here -- its function cell
+      ;  holds the dispatch macro, handled above -- so this is a direct call.
+      ((known-function-p head)
        (cons head (convert-each (cdr x) env)))
       ;  Anything else names a value: the Lisp1 call.
       (t (list* 'funcall (convert head env) (convert-each (cdr x) env))))))

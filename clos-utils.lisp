@@ -72,6 +72,12 @@ with it."
   (let ((parallel (parallel-class-name name))
         (parallel-supers (mapcar #'parallel-class-name super-class-list)))
     `(progn
+       ;  Known as variables while the rest of the file is compiled, not only
+       ;  once it is loaded: DEFPARAMETER promises that on some implementations
+       ;  but not others, and without it single-namespace code naming the class
+       ;  takes the name for a forward reference to a DEFINE.
+       (eval-when (:compile-toplevel)
+         (proclaim '(special ,name ,parallel)))
        ;  Captured before the DEFCLASS below, restored after it; see
        ;  *SAVED-CLASS-VARIABLES*.
        (setf (gethash ',name *saved-class-variables*)
@@ -168,6 +174,12 @@ class variable through an instance sets the one value the class shares."
    method body written in another package would otherwise refer to its own
    SELF rather than this one."
   (let ((alist (gensym)))
-    `(defmethod ,method-name ((self ,class-name) &rest ,alist)
-       (apply #'(lambda (self ,@arg-list) ,@body)
-	      (cons self ,alist)))))
+    `(progn
+       ;  So that single-namespace code compiled in the same file calls it
+       ;  directly; see KNOWN-FUNCTION-P.
+       (eval-when (:compile-toplevel)
+         (when (fboundp 'note-function)
+           (funcall 'note-function ',method-name)))
+       (defmethod ,method-name ((self ,class-name) &rest ,alist)
+         (apply #'(lambda (self ,@arg-list) ,@body)
+                (cons self ,alist))))))

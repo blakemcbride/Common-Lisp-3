@@ -2,6 +2,7 @@
 #
 #   make test    run the regression suite on every installed implementation
 #   make bench   measure per-call overhead on every installed implementation
+#   make bench-program   a whole program, plain CL against CL3 (SBCL only)
 #   make clean   remove fasls and scratch files
 #
 # Restrict to one implementation with, for example:
@@ -10,11 +11,12 @@
 
 LISPS ?= sbcl ccl ecl abcl clisp
 
-.PHONY: test bench clean help
+.PHONY: test bench bench-program clean help
 
 help:
 	@echo "make test [LISPS='sbcl ccl ...']   run the regression suite"
 	@echo "make bench                         measure per-call overhead"
+	@echo "make bench-program                 a whole program, plain CL vs CL3 (SBCL)"
 	@echo "make clean                         remove fasls and scratch files"
 
 test:
@@ -39,6 +41,9 @@ bench:
 	    $(MAKE) --no-print-directory run-$$l SCRIPT=bench/overhead.lisp || true; \
 	  fi; \
 	done
+
+bench-program:
+	@sbcl --script bench/program.lisp
 
 # Per-implementation invocation.  Each script exits with its own status.
 run-sbcl:
