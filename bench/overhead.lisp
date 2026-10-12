@@ -7,10 +7,9 @@
 ;;;; non-existent".  This measures it, so the claim can be stated in numbers and
 ;;;; kept honest as the converter grows.
 ;;;;
-;;;; A single-namespace call compiles to (FUNCALL <variable> args...): a variable read
-;;;; plus an indirect call, opaque to the compiler.  The cycles are only part
-;;;; of the cost -- the call is also invisible to arity checking, inlining and
-;;;; type inference, which no timing loop can show.
+;;;; A single-namespace call to a defined function is a direct call, the
+;;;; value being also the name's function definition, so it should cost what
+;;;; a native NOTINLINE call costs.  It is still not inlined.
 ;;;;
 ;;;; Caveats: a microbenchmark on a trivial callee exaggerates call overhead
 ;;;; relative to real code, and ABCL's JIT makes its numbers unstable enough
@@ -107,8 +106,7 @@ suppresses scheduler and GC noise better than an average.")
                      ~&  the subtracted ratio would be noise, so only the column above~%~
                      ~&  is meaningful on this implementation.~%"
                   (float loop-only) (float native))))
-    (format t "  Microbenchmark on a trivial callee. Does not capture the loss of~%")
-    (format t "  compile-time arity checking, inlining or type inference.~%~%"))
+    (format t "  Microbenchmark on a trivial callee.~%~%"))
   (finish-output))
 
 (run)

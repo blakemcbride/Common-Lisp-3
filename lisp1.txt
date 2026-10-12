@@ -178,37 +178,38 @@ save / load work with the underlying Lisp system.  Lisp1 converts
 everything from LISP1 to CL as it is defined, and only has to do this
 once, so there is no conversion cost at run time.
 
-There is a run-time cost, and it is worth being honest about it.  A
-Lisp1 call compiles to a FUNCALL of a variable, which is an indirect
-call the compiler cannot see through.  Measured by bench/overhead.lisp
-on a trivial callee, 20 million iterations, best of three, over several
-runs on one machine:
+A name defined with a function value is also that function's name in
+the ordinary Common Lisp sense, so (NAME arg...) is a direct call.
+#'NAME, FDEFINITION and CL:TRACE work, plain Common Lisp code calls
+NAME like any function, and there is no run-time cost: measured by
+bench/overhead.lisp on a trivial callee, a call runs at 0.9x to 1.0x a
+native call on SBCL, CCL, ECL, ABCL and CLISP.  Every assignment --
+DEFINE, SETQ, SETF, (SETF CL3:VALUE-OF) -- keeps the value and the
+function in step, and a name given a non-function value has no
+function definition.
 
-    SBCL    about 1.1x a native call over the whole loop, and
-            1.1x to 1.4x for the call alone once the cost of the
-            empty loop is subtracted
-    CCL     about 1.6x over the whole loop, 2.7x for the call alone
-    CLISP   about 1.0x -- lost in the noise
+The value is reachable too: NAME is a symbol macro for it, so ordinary
+Common Lisp can write (funcall name 1 2) or (mapcar name list).
+CL3:VALUE-OF and CL3:FUNCTION-OF give it directly, and
+CL3:TRACE-CALLS traces calls made through the value as well as by
+name.
 
-Run it on your own machine rather than trusting those; a
-microbenchmark on a callee this small exaggerates call overhead
-relative to real code, and the figures move a little between runs.
+When the value is written as a literal lambda, DEFINE proclaims its
+FTYPE, so the compiler checks argument counts, and a converted call
+with the wrong number of arguments draws a style warning.  Set
+CL3:*CHECK-ARITY* to NIL to switch the latter off.
 
-The cycles are the smaller part.  The larger part is what the compiler
-cannot do for an indirect call: no inlining, no type inference, and no
-argument-count check.  DEFINE recovers the last of those where it can
--- when the value is written as a literal lambda, a call with the wrong
-number of arguments draws a style warning at macroexpansion time.  Set
-CL3:*CHECK-ARITY* to NIL to switch that off.
+Names need not be defined in order.  A free name that nothing has
+defined is taken to be a DEFINE further on, so mutual recursion just
+works; a name never defined is reported under its own name.  A call to
+one is an undefined function, reported as the compiler reports any
+other.
 
-Two limitations are worth knowing before you start.
-
-Because NAME's function cell holds the macro that makes (NAME arg...)
-work, #'NAME and CL:TRACE cannot.  The value is still reachable: NAME
-is a symbol macro for its value, so ordinary Common Lisp code can write
-(funcall name 1 2) or (mapcar name list).  CL3:VALUE-OF and
-CL3:FUNCTION-OF give the value directly, (SETF CL3:VALUE-OF) sets
-it, and CL3:TRACE-CALLS / CL3:UNTRACE-CALLS trace it.
+Everything else is a value too.  A COMMON-LISP function is its
+function -- (reduce + xs), (mapcar car pairs) -- and so is anything
+defined by DEFUN or DEFMETHOD, which can also be called by name.  +, -,
+* and / are the arithmetic in converted code, including at CL3:REP,
+which keeps its history in **, ***, ++, +++ and the rest.
 
 A form Lisp1 does not recognise is macroexpanded and its expansion
 converted, which is correct whatever the macro turns out to be.  When a
@@ -289,6 +290,14 @@ already handles them in a single-namespace way.
 definition.  Assigning a function of a different arity to the name
 afterwards leaves the check out of date, which is why it is a style
 warning and why CL3:*CHECK-ARITY* exists.
+
+6.  Converted code cannot see local bindings made by plain Common Lisp
+around it.  In (defun f (list) (lisp1 (car list))), LIST is taken for
+CL:LIST, not the parameter.  Bindings made inside converted code are
+seen.
+
+7.  A misspelled value, as opposed to a misspelled call, is taken for a
+later definition, and found only when the code runs.
 
 Please feel free with questions, comments, and improvements.
 

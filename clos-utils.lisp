@@ -174,12 +174,6 @@ class variable through an instance sets the one value the class shares."
    method body written in another package would otherwise refer to its own
    SELF rather than this one."
   (let ((alist (gensym)))
-    `(progn
-       ;  So that single-namespace code compiled in the same file calls it
-       ;  directly; see KNOWN-FUNCTION-P.
-       (eval-when (:compile-toplevel)
-         (when (fboundp 'note-function)
-           (funcall 'note-function ',method-name)))
-       (defmethod ,method-name ((self ,class-name) &rest ,alist)
-         (apply #'(lambda (self ,@arg-list) ,@body)
-                (cons self ,alist))))))
+    `(defmethod ,method-name ((self ,class-name) &rest ,alist)
+       (apply #'(lambda (self ,@arg-list) ,@body)
+	      (cons self ,alist)))))

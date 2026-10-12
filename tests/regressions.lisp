@@ -223,7 +223,7 @@ same function name fails the second time."
   (eval-str "(define rd-never (lambda () (rd-undefined 1)))")
   (is-equal 'cl3-user::rd-undefined
             (handler-case (eval-str "(rd-never)")
-              (unbound-variable (c) (cell-error-name c)))
+              (cell-error (c) (cell-error-name c)))
             "a name never defined is reported by its own name")
   (is-equal 5 (eval-str "(let ((rd-free 5)) rd-free)")
             "a lexical binding still shadows"))
@@ -849,9 +849,50 @@ same function name fails the second time."
   ;; Already true today; pinned so Phase 1 cannot regress it.
   (is-equal '(2 4 6) (eval-str "(mapcar f19-dbl '(1 2 3))")
             "a defined function can be passed to a CL higher-order function")
-  ;; #'name and CL:TRACE cannot work by design -- a symbol cannot hold both a
-  ;; macro and a function -- so accessors are the supported route.
   (is-true (cl3-symbol "FUNCTION-OF") "CL3:FUNCTION-OF exists"))
+
+;; #'NAME and CL:TRACE could not work: the function cell held a call-dispatch
+;; macro.  A function value is now also the name's function definition.
+(deftest defined-functions-are-functions (:phase "cl3" :severity :serious)
+  (eval-str "(define rf-dbl (lambda (n) (* n 2)))")
+  (is-equal 8 (eval-str "(funcall #'rf-dbl 4)") "#'NAME is the function")
+  (is-equal 8 (eval-str "(funcall (fdefinition 'rf-dbl) 4)") "so is its FDEFINITION")
+  (is-true (eval-str "(eq #'rf-dbl rf-dbl)") "the same object as the value")
+  (eval-str "(lisp1 (setq rf-dbl (lambda (n) (* n 3))))")
+  (is-equal 12 (eval-str "(funcall #'rf-dbl 4)") "SETQ keeps them in step")
+  (eval-str "(setf (cl3:value-of 'rf-dbl) (lambda (n) (* n 4)))")
+  (is-equal 16 (eval-str "(rf-dbl 4)") "and so does (SETF VALUE-OF)")
+  (eval-str "(lisp1 (setq rf-dbl 5))")
+  (is-equal nil (eval-str "(fboundp 'rf-dbl)") "a non-function value is not a function")
+  (eval-str "(define rf-sq (lambda (n) (* n n)))")
+  (let ((text (with-output-to-string (out)
+                (let ((*trace-output* out))
+                  (eval-str "(trace rf-sq)")
+                  (eval-str "(lisp1 (rf-sq 7))")
+                  (eval-str "(untrace rf-sq)")))))
+    (is-true (search "RF-SQ" (string-upcase text)) "CL:TRACE sees a call")))
+
+(deftest misspelled-calls-are-reported (:phase "cl3" :severity :minor)
+  ;; A call is a direct call, so a name never defined anywhere is the
+  ;; compiler's undefined function, reported exactly as for a DEFUN.  SBCL and
+  ;; CCL signal a warning for it; ECL, CLISP and ABCL print a note instead.
+  (unless (compile-file-usable-p)
+    (skip "CL:COMPILE-FILE unusable here, on a file with no Lisp1 in it"))
+  (let* ((dir (scratch-dir))
+         (*default-pathname-defaults* dir))
+    (flet ((warns-on (name line)
+             (let ((src (merge-pathnames name dir)))
+               (with-open-file (s src :direction :output :if-exists :supersede)
+                 (write-line "(in-package \"CL3-USER\")" s)
+                 (write-line line s))
+               ;; Its own compilation unit: the warning comes when the unit
+               ;; ends, which would otherwise be after the whole suite.
+               (warns-p (lambda ()
+                          (with-compilation-unit (:override t)
+                            (cl:compile-file src :verbose nil :print nil)))))))
+      (is-equal (warns-on "mcplain.lisp" "(defun mc-plain (n) (mc-misspeled n))")
+                (warns-on "mccl3.lisp" "(define mc-use (lambda (n) (mc-misspeled n)))")
+                "an undefined call is reported as plain Common Lisp reports it"))))
 
 (deftest definitions-are-reachable-and-traceable (:phase "6.1" :severity :serious)
   (eval-str "(define p61-dbl (lambda (n) (* n 2)))")
@@ -892,49 +933,50 @@ same function name fails the second time."
                     (define p62-opt  (lambda (a &optional b) (list a b)))
                     (define p62-rest (lambda (a &rest more) (list a more))))")
   (flet ((expand (text) (lambda () (eval-str text))))
-    (is-true  (warns-p (expand "(macroexpand-1 '(p62-two 1))"))
+    (is-true  (warns-p (expand "(cl3:convert '(p62-two 1))"))
               "too few arguments warns")
-    (is-true  (warns-p (expand "(macroexpand-1 '(p62-two 1 2 3))"))
+    (is-true  (warns-p (expand "(cl3:convert '(p62-two 1 2 3))"))
               "too many arguments warns")
-    (is-equal nil (warns-p (expand "(macroexpand-1 '(p62-two 1 2))"))
+    (is-equal nil (warns-p (expand "(cl3:convert '(p62-two 1 2))"))
               "the right number does not")
-    (is-equal nil (warns-p (expand "(macroexpand-1 '(p62-opt 1))"))
+    (is-equal nil (warns-p (expand "(cl3:convert '(p62-opt 1))"))
               "&optional may be omitted")
-    (is-equal nil (warns-p (expand "(macroexpand-1 '(p62-opt 1 2))"))
+    (is-equal nil (warns-p (expand "(cl3:convert '(p62-opt 1 2))"))
               "or supplied")
-    (is-true  (warns-p (expand "(macroexpand-1 '(p62-opt 1 2 3))"))
+    (is-true  (warns-p (expand "(cl3:convert '(p62-opt 1 2 3))"))
               "but not exceeded")
-    (is-equal nil (warns-p (expand "(macroexpand-1 '(p62-rest 1 2 3 4))"))
+    (is-equal nil (warns-p (expand "(cl3:convert '(p62-rest 1 2 3 4))"))
               "&rest is unbounded")
-    (is-true  (warns-p (expand "(macroexpand-1 '(p62-rest))"))
+    (is-true  (warns-p (expand "(cl3:convert '(p62-rest))"))
               "though its required argument is still required"))
   ;; A style warning, not an error: the name holds a variable and may be
   ;; reassigned to a function of another arity at run time.
-  (is-true (eval-str "(macroexpand-1 '(p62-two 1 2 3))")
-           "a mis-arity call still expands")
+  (is-true (eval-str "(cl3:convert '(p62-two 1 2 3))")
+           "a mis-arity call is still converted")
   (signals-condition style-warning
-                     (eval-str "(macroexpand-1 '(p62-two 1 2 3))")
+                     (eval-str "(cl3:convert '(p62-two 1 2 3))")
                      "and what it signals is a STYLE-WARNING")
   ;; Redefining with a different arity updates the check.
   (eval-str "(define p62-two (lambda (a b c) (+ a b c)))")
-  (is-equal nil (warns-p (lambda () (eval-str "(macroexpand-1 '(p62-two 1 2 3))")))
+  (is-equal nil (warns-p (lambda () (eval-str "(cl3:convert '(p62-two 1 2 3))")))
             "redefinition updates the expected arity")
   ;; And it can be switched off.
   (let ((switch (find-symbol "*CHECK-ARITY*" "CL3")))
     (is-true switch "CL3:*CHECK-ARITY* exists")
     (progv (list switch) (list nil)
-      (is-equal nil (warns-p (lambda () (eval-str "(macroexpand-1 '(p62-two 1))")))
+      (is-equal nil (warns-p (lambda () (eval-str "(cl3:convert '(p62-two 1))")))
                 "and *CHECK-ARITY* NIL silences it"))))
 
 (deftest arity-is-checked-at-expansion (:finding 20 :severity :minor)
   ;; When DEFINE's value form is a literal lambda its arity is known at
-  ;; macroexpansion time, so a mis-arity call should warn then rather than
-  ;; failing at run time.  A style warning, not an error: the variable may
+  ;; conversion time, so a mis-arity call should warn then rather than
+  ;; failing at run time.  (A call from plain Common Lisp is the compiler's to
+  ;; check, from the FTYPE DEFINE proclaims.)  A style warning, not an error: the variable may
   ;; legally be reassigned to a function of different arity.
   (eval-str "(define f20-add (lambda (a b) (+ a b)))")
   (signals-condition style-warning
-                     (eval-str "(macroexpand-1 '(f20-add 1 2 3))")
-                     "too many arguments warns at macroexpansion time"))
+                     (eval-str "(cl3:convert '(f20-add 1 2 3))")
+                     "too many arguments warns at conversion time"))
 
 
 ;;; ==================================================================

@@ -67,6 +67,19 @@ ordinary Common Lisp -- load just these two:
 (apply-to add 5 6)                                ; => 11
 ```
 
+A defined function is also an ordinary Common Lisp function, so `#'add`,
+`CL:TRACE` and calls from plain Common Lisp work, and a call costs what a
+native call costs.  Common Lisp's own functions, and anything defined by
+`DEFUN` or `DEFMETHOD`, are values in the same way:
+
+```lisp
+(reduce + '(1 2 3))                               ; => 6
+(mapcar car '((1 2) (3 4)))                       ; => (1 3)
+```
+
+A definition may refer to one further on, so mutual recursion needs nothing
+special.
+
 Definitions are lexically scoped, so closures behave:
 
 ```lisp
@@ -114,9 +127,15 @@ implementations differ in ways that matter here, particularly in how the
 reader represents back-quote and when a compile-time macro definition
 becomes visible.
 
-`make bench` measures what the single namespace costs per call.  A
-call through a name compiles to a `funcall` of a variable, which runs
-about 1.0x-1.6x a native call depending on the implementation.
+`make bench` measures what the single namespace costs per call.  A call
+through a defined name is a direct call, and runs at 0.9x-1.0x a native
+call on all five implementations.
+
+`make bench-program` (SBCL) runs one program written both in plain Common
+Lisp and in Common Lisp 3: recursion, higher-order functions, sorting with
+a predicate, and objects.  The single namespace costs nothing measurable;
+the layer over CLOS costs about 8x, in `get-slot`, `set-slot` and
+`define-method`.
 
 ## Needed
 

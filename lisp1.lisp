@@ -84,9 +84,14 @@ not apply.")
 ;      ((f 1))                         ; => 10, not 1
 ;
 ;  A hidden special cell plus DEFINE-SYMBOL-MACRO gives a global that a LET
-;  can shadow lexically, which is what Lisp1 semantics require.  A symbol can
-;  carry a symbol macro (variable namespace) and a macro (function namespace)
-;  at the same time, so call dispatch is unaffected.
+;  can shadow lexically, which is what Lisp1 semantics require.
+;
+;  When the value is a function it is also the name's function definition, so
+;  that (NAME arg...) is an ordinary direct call: #'NAME and CL:TRACE work,
+;  plain Common Lisp calls the name as it would any function, and the compiler
+;  checks the arguments.  The two are kept in step on every assignment --
+;  DEFINE, SETQ, SETF, from converted code or plain -- because the symbol
+;  macro expands to a GLOBAL-VALUE form whose SETF writes both.
 ;  ----------------------------------------------------------------------
 
 (defun hidden-symbol (prefix name)
@@ -103,9 +108,10 @@ so that same-named symbols from different packages cannot collide."
   (hidden-symbol "" name))
 
 (defun gf-symbol (name)
-  "The generic function standing behind NAME.  Methods cannot live on NAME
-itself, because its function cell holds the call-dispatch macro; the space in
-the prefix keeps these names clear of the value cells."
+  "The generic function standing behind NAME.  NAME holds it as its value
+and its function; it is kept apart so that NAME can be reassigned without
+losing the methods.  The space in the prefix keeps these names clear of the
+value cells."
   (hidden-symbol "GENERIC " name))
 
 (defun lisp1-error (control &rest args)
@@ -126,13 +132,34 @@ a LET binding of a lexical name is not."
                     (eq (symbol-value ',name) ',probe)))))
        t))
 
+(defmacro global-value (cell name)
+  "What a global lexical's symbol macro expands to: a read of CELL."
+  (declare (ignore name))
+  cell)
+
+(defun store-global-forms (cell name new)
+  "Forms storing NEW, a variable, into CELL and keeping NAME's function
+definition in step with it.  Written out inline, so that compiled code does
+not need Common Lisp 3 loaded to assign a global lexical."
+  `((setf (symbol-value ',cell) ,new)
+    (if (functionp ,new)
+        (setf (fdefinition ',name) ,new)
+        (fmakunbound ',name))
+    ,new))
+
+(define-setf-expander global-value (cell name)
+  (let ((new (gensym "NEW")))
+    (values '() '() (list new)
+            `(progn ,@(store-global-forms cell name new))
+            cell)))
+
 (defun global-lexical-p (name)
   "True when NAME is already a Lisp1 global lexical."
   (and (symbolp name)
        (multiple-value-bind (expansion expanded) (macroexpand-1 name)
          (and expanded
-              (symbolp expansion)
-              (eq (symbol-package expansion) (find-package "CL3-CELLS"))
+              (consp expansion)
+              (eq (car expansion) 'global-value)
               t))))
 
 (defun check-definable (name operator)
@@ -198,8 +225,30 @@ when unbounded."
     (multiple-value-bind (min max) (lambda-list-arity (cadr form))
       (cons min max))))
 
+(defvar *arities* (make-hash-table :test #'eq)
+  "Name -> (MIN . MAX), for names DEFINE has seen given a literal lambda.
+Recorded when the definition is expanded, so a call converted later in the
+same file is checked even before the file is loaded.")
+
+(defun lambda-list-ftype (lambda-list)
+  "An FTYPE for a function with LAMBDA-LIST, or FUNCTION when keyword
+arguments make spelling one out more trouble than it is worth.  Declared so
+that the compiler checks the argument count of a direct call."
+  (let ((types '()))
+    (dolist (item lambda-list `(function ,(nreverse types) *))
+      (cond ((member item '(&key &allow-other-keys &whole &environment))
+             (return 'function))
+            ((eq item '&aux) (return `(function ,(nreverse types) *)))
+            ((member item '(&optional &rest &body))
+             (push (if (eq item '&body) '&rest item) types))
+            ((eq (car types) '&rest) (push t types))
+            ((member '&rest types))       ; the &rest variable is already in
+            (t (push t types))))))
+
 (defun dispatch-macro-form (name rest-var arity)
-  "The macro that turns (NAME arg...) into a call of NAME's value.
+  "The macro that turns (NAME arg...) into a call of NAME's value.  Used
+for DEFINE-DYNAMIC only: a special variable can be rebound, so its value
+cannot also be its function definition.
 
 The arity check is guarded by FBOUNDP rather than called outright, because a
 compiled file can be loaded into an image where the LISP1 package exists but
@@ -212,35 +261,32 @@ Checking then simply does not happen; the call still works."
                       ',name (length ,rest-var) ,(car arity) ,(cdr arity)))))
      (list* 'funcall ',name ,rest-var)))
 
-(defun global-lexical-forms (name value-form &key (dispatch t) arity)
-  "Forms binding NAME as a global lexical holding VALUE-FORM, and making
-(NAME arg...) call that value.
-
-DISPATCH nil omits the call-dispatch macro, for callers adding to a name that
-already has one.  DEFMETHOD is the case that matters: several methods on one
-name are ordinary, and re-defining the same macro once per method is a
-duplicate definition -- which CCL reports and counts as a compilation
-failure."
+(defun global-lexical-forms (name value-form &key ftype)
+  "Forms binding NAME as a global lexical holding VALUE-FORM, which is also
+NAME's function definition when it is a function.  FTYPE, when known, is
+proclaimed for NAME so that the compiler can check calls to it."
   (let ((cell (cell-symbol name))
-        (rest (gensym "ARGS")))
+        (new (gensym "NEW")))
     ;  The symbol macro comes before the assignment, so that a value referring
     ;  to NAME -- a recursive function, above all -- compiles to a read of the
-    ;  cell rather than of a free variable NAME, unbound at run time.
-    (append (list `(defvar ,cell)
-                  `(define-symbol-macro ,name ,cell)
-                  `(setf ,cell ,value-form))
-            (when dispatch
-              (list (dispatch-macro-form name rest arity))))))
+    ;  cell rather than of a free variable NAME, unbound at run time.  The
+    ;  FTYPE comes before it too, so that a recursive call is checked.
+    `((defvar ,cell)
+      (define-symbol-macro ,name (global-value ,cell ,name))
+      ,@(when ftype `((declaim (ftype ,ftype ,name))))
+      ;  Stored through the cell rather than the symbol macro: a DEFINE that
+      ;  is not at top level is compiled before its symbol macro exists.
+      (let ((,new ,value-form))
+        ,@(store-global-forms cell name new)))))
 
 
 ;  ----------------------------------------------------------------------
 ;  Reaching a definition from ordinary Common Lisp
 ;
-;  A symbol cannot hold both a macro and a function, and NAME's function cell
-;  holds the call-dispatch macro, so #'NAME and (trace NAME) cannot work.  The
-;  value is reachable though -- NAME is a symbol macro for its cell, so plain
-;  CL code can write (funcall name 1 2) or (mapcar name list).  What follows
-;  covers the rest.
+;  A defined function is NAME's function definition, so #'NAME and
+;  (trace NAME) work, and NAME is a symbol macro for its value, so plain CL
+;  code can write (funcall name 1 2) or (mapcar name list).  What follows
+;  reaches the value by name, and traces calls made through it.
 ;  ----------------------------------------------------------------------
 
 (defun value-of (name)
@@ -255,7 +301,12 @@ failure."
 (defun (setf value-of) (new name)
   (unless (global-lexical-p name)
     (lisp1-error "(SETF VALUE-OF): ~s was not defined by Lisp1." name))
-  (setf (symbol-value (cell-symbol name)) new))
+  (let ((cell (cell-symbol name)))
+    (setf (symbol-value cell) new)
+    (if (functionp new)
+        (setf (fdefinition name) new)
+        (fmakunbound name))
+    new))
 
 (defun function-of (name)
   "The function NAME holds -- what #'NAME would give if NAME were a function.
@@ -270,8 +321,9 @@ Use it where Common Lisp wants a function object and the name is Lisp1's."
   "Traced name -> the function it held before tracing.")
 
 (defun trace-calls (name)
-  "Trace calls to NAME.  CL:TRACE works through the function cell, which here
-holds the dispatch macro, so it cannot be used.
+  "Trace calls to NAME, including those made through its value -- passed to
+MAPCAR, say -- which CL:TRACE, working on the function definition, does not
+see.
 
 Not named TRACE-FUNCTION: CCL's CL-USER already inherits CCL:TRACE-FUNCTION,
 and (use-package \"LISP1\") there would signal a name conflict.  Avoiding a
@@ -312,10 +364,14 @@ that binding in scope, where before it was converted with none, so
 
 called CL:LIST rather than the local binding -- finding 5 again, one level in."
   (check-definable name 'define)
-  `(progn
-     ,@(global-lexical-forms name (convert value env)
-                             :arity (literal-lambda-arity value))
-     ',name))
+  (let ((arity (literal-lambda-arity value)))
+    (if arity
+        (setf (gethash name *arities*) arity)
+        (remhash name *arities*))
+    `(progn
+       ,@(global-lexical-forms name (convert value env)
+                               :ftype (and arity (lambda-list-ftype (cadr value))))
+       ',name)))
 
 (defmacro define (name value &environment env)
   "Define NAME as a global lexical holding VALUE, callable as (NAME arg...).
@@ -364,14 +420,7 @@ list; NIL is a list, so an empty lambda list ends the run correctly."
           do (push (pop rest) qualifiers))
     (let* ((qualifiers (nreverse qualifiers))
            (lambda-list (pop rest))
-           (gf (gf-symbol name))
-           ;  A top level DEFMACRO is available at compile time, so on the
-           ;  second and later methods for a name this is already true and the
-           ;  dispatch macro is left alone.  The environment argument is not
-           ;  optional: CCL registers a compile-time macro in the compilation
-           ;  environment only, so MACRO-FUNCTION without it reports NIL there
-           ;  and every method would re-emit the macro.
-           (dispatch (not (macro-function name *cl-environment*))))
+           (gf (gf-symbol name)))
       (multiple-value-bind (converted-list body-env)
           (walk-specialized-lambda-list lambda-list env)
         ;  CLOS makes these available inside a method body, but they are not
@@ -382,16 +431,17 @@ list; NIL is a list, so an empty lambda list ends the run correctly."
         `(progn
            (defmethod ,gf ,@qualifiers ,converted-list
              ,@(convert-each rest body-env))
-           ,@(global-lexical-forms name `(function ,gf) :dispatch dispatch)
+           ,@(global-lexical-forms name `(function ,gf) :ftype 'function)
            ',name)))))
 
 (defmacro define-meth (name &rest rest &environment env)
   "Add a method to the generic function held in NAME.
 
-The methods live on a hidden generic function rather than on NAME itself:
-NAME's function cell holds the call-dispatch macro, and DEFMETHOD on a symbol
-that already names a macro is an error -- which previously limited a name to
-one method, and destroyed that method when a second was attempted."
+The methods live on a hidden generic function rather than on NAME itself, and
+NAME holds it as its value and its function definition.  NAME's function cell
+once held a call-dispatch macro, and DEFMETHOD on a symbol naming a macro is
+an error -- which limited a name to one method, and destroyed that method when
+a second was attempted."
   (let ((*cl-environment* env))
     (expand-define-meth name rest nil)))
 
@@ -1064,24 +1114,10 @@ specializer, which is evaluated and so is converted."
          (t (error 'unbound-variable :name ',name))))
 
 (define-setf-expander forward-reference (cell name)
-  (declare (ignore name))
   (let ((new (gensym "NEW")))
     (values '() '() (list new)
-            `(setf (symbol-value ',cell) ,new)
-            `(symbol-value ',cell))))
-
-(defvar *known-functions* (make-hash-table :test #'eq)
-  "Names that will be functions once the file being compiled is loaded.
-COMPILE-FILE does not define a function at compile time, so a converter asking
-FBOUNDP of a method defined earlier in the same file is told no.  Definers in
-the layer over CLOS note their names here at compile time instead.")
-
-(defun note-function (name)
-  (setf (gethash name *known-functions*) t)
-  name)
-
-(defun known-function-p (name)
-  (or (fboundp name) (gethash name *known-functions*)))
+            `(progn ,@(store-global-forms cell name new))
+            `(forward-reference ,cell ,name))))
 
 (defun forward-reference-p (x env)
   "True when X, a free variable here, names nothing yet."
@@ -1178,20 +1214,19 @@ variable and a function.  A local binding of the name wins, as everywhere."
       ;  it is not mistaken for CL:SECOND.
       ((and (is-builtin head) (fboundp head))
        (cons head (convert-each (cdr x) env)))
-      ;  A function whose name the user could not have written, because the
-      ;  symbol is not accessible in the current package.  It came from a
-      ;  macroexpansion, so it is a call and its arguments are expressions.
-      ;  Without this, an implementation internal reached by expanding a macro
-      ;  would be rewritten into a FUNCALL of an unbound variable.
-      ((and (fboundp head) (not (symbol-accessible-p head)))
-       (cons head (convert-each (cdr x) env)))
-      ;  An ordinary function: a DEFUN, a generic function, or Common Lisp 3's
-      ;  own GET-SLOT.  A DEFINE'd name never gets here -- its function cell
-      ;  holds the dispatch macro, handled above -- so this is a direct call.
-      ((known-function-p head)
-       (cons head (convert-each (cdr x) env)))
-      ;  Anything else names a value: the Lisp1 call.
-      (t (list* 'funcall (convert head env) (convert-each (cdr x) env))))))
+      ;  A special variable holding a function, DEFINE-DYNAMIC's or anyone's:
+      ;  the call is to its current value.
+      ((globally-special-p head)
+       (list* 'funcall head (convert-each (cdr x) env)))
+      ;  Anything else is a direct call: a DEFINE, whose value is also its
+      ;  function definition; a DEFUN or generic function, among them Common
+      ;  Lisp 3's own GET-SLOT; or a name defined further on.  A name that is
+      ;  never defined draws the compiler's undefined-function warning.
+      (t
+       (let ((arity (gethash head *arities*)))
+         (when (and arity (global-lexical-p head))
+           (check-call-arity head (length (cdr x)) (car arity) (cdr arity))))
+       (cons head (convert-each (cdr x) env))))))
 
 (defun symbol-accessible-p (symbol)
   "True when SYMBOL could have been written by name in the current package."

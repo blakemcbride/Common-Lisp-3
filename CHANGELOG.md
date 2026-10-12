@@ -10,6 +10,53 @@ on one implementation only, which is why the suite now runs on all five.
 **Not backward compatible with images or fasls built by the previous version.**
 See *Upgrading* below.
 
+### Changed — a defined function is a real function
+
+- **A `DEFINE` whose value is a function is also the name's function
+  definition.** `(name args)` compiles to an ordinary direct call rather than
+  a `FUNCALL` of a variable, so `#'name`, `FDEFINITION` and `CL:TRACE` work,
+  plain Common Lisp calls the name like any function, and the call costs what
+  a native call costs: 0.9x–1.0x on all five implementations, where it was up
+  to 2.7x. Every assignment — `DEFINE`, `SETQ`, `SETF`, `(SETF VALUE-OF)`,
+  from converted code or plain — keeps the value and the function definition
+  in step; a non-function value leaves the name with no function definition.
+- **The compiler checks calls.** A literal-lambda definition proclaims an
+  `FTYPE`, so SBCL checks argument counts in plain Common Lisp too. The
+  converter's own check, with `*CHECK-ARITY*`, now runs when a call is
+  converted; there is no call-dispatch macro to run it at expansion.
+- **A misspelled call is reported again**, as an undefined function, exactly
+  as for a `DEFUN`.
+
+### Fixed — writing whole programs in the single namespace
+
+Found by `bench/program.lisp`, which writes one program both ways.
+
+- **A `DEFINE` can call itself.** Its value was compiled before the name
+  became a symbol macro, so a recursive call read an unbound free variable.
+- **A `DEFINE` can refer to a name defined further on**, so mutual recursion
+  works, in call and value position alike. A free name nothing has defined is
+  taken for a later `DEFINE`; a lexical binding still shadows it, and a name
+  never defined is reported under its own name. A misspelled *value* is found
+  at run time only.
+- **`DEFUN` functions, generic functions and `GET-SLOT` can be called by name
+  inside a `DEFINE`.** Every call head outside `COMMON-LISP` was taken for a
+  variable, so the single namespace and the layer over CLOS could not be used
+  together. A `DEFUN` is also a value: `(mapcar my-defun xs)`.
+- **A `COMMON-LISP` function is a value.** `(reduce + xs)` and
+  `(mapcar car pairs)` work. `+ - * /` are the arithmetic in converted code,
+  including at `CL3:REP`, which reaches its history through `** *** ++ +++`.
+- **`DEFINE-CLASS` declares its names at compile time.** CCL, ECL and CLISP
+  did not know them as variables until load, so converted code in the same
+  file naming a class failed.
+
+### Added — a whole-program benchmark
+
+- `bench/program.lisp` and `make bench-program` (SBCL): one program written
+  in plain Common Lisp and in Common Lisp 3 — recursion, higher-order
+  functions, sorting with a predicate, objects. The single namespace costs
+  nothing measurable; the layer over CLOS costs about 8x, from `GET-SLOT`,
+  `SET-SLOT` and `DEFINE-METHOD`'s `&rest` and `APPLY`.
+
 ### Changed — class variables are shared, as in Smalltalk
 
 - **A class variable is one value shared by the class that declares it and
@@ -144,8 +191,8 @@ See *Upgrading* below.
 - **The REPL is usable.** End of input dropped into the debugger rather than
   exiting; a bare `quit` raised an unbound-variable error; `(1 2)` raised a type
   error; and any error unwound out of the loop, ending the session. It now
-  reports and carries on, keeps the standard history variables, and prints all
-  values.
+  reports and carries on, keeps the standard history variables (`*` and `+`
+  themselves are now the arithmetic; see above), and prints all values.
 
 - **Exit works on every implementation.** `REPQ` had branches for SBCL and
   CLISP only. `CL3:QUIT-LISP` covers all five and more.
@@ -154,8 +201,8 @@ See *Upgrading* below.
 
 - `DEFINE-DYNAMIC` — a dynamically scoped global.
 - `VALUE-OF`, `FUNCTION-OF`, `(SETF VALUE-OF)`, `TRACE-CALLS`, `UNTRACE-CALLS`
-  — reach a definition from ordinary Common Lisp. `#'name` and `CL:TRACE`
-  cannot work, because the function cell holds the dispatch macro.
+  — reach a definition from ordinary Common Lisp. (`#'name` and `CL:TRACE`
+  work too now; `TRACE-CALLS` also sees calls made through the value.)
 - `DEFINE-FORM-WALKER` — teach the converter a macro of your own whose
   arguments are not all expressions.
 - `EVAL-FORM`, and `CONVERT` is exported.
