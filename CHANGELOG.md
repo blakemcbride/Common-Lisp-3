@@ -13,7 +13,7 @@ See *Upgrading* below.
 ### Changed — the layer over CLOS is fast
 
 The objects workload of `bench/program.lisp` ran 8x slower than plain CLOS;
-it is now about 1.5x.
+it now runs at the same speed.
 
 - **Class-side state is held in CLOS shared slots of the class itself**, not
   in a parallel `CLASS-<name>` class. A class variable is a shared slot
@@ -25,14 +25,16 @@ it is now about 1.5x.
 - **`GET-SLOT` and `SET-SLOT` are a `SLOT-VALUE`.** They called
   `SLOT-EXISTS-P` on every access; now, with a constant slot name, a compiler
   macro makes them an inline `SLOT-VALUE` behind a cheap class-or-instance
-  test. A class variable reached through an instance costs the same as an
-  instance variable.
+  test. Inside a `DEFINE-METHOD` body, where `SELF` is known to be an
+  instance, even the test goes, so `(get-slot self 'x)` is exactly
+  `(slot-value self 'x)`. A class variable reached through an instance costs
+  the same as an instance variable.
 - **`DEFINE-METHOD` has fixed lambda lists.** Every method had the lambda list
   `(SELF &REST ARGS)` and applied its body to them, so one name could take
   different argument counts in different classes. Each count now has its own
   generic function, and a call with a known count goes straight to it; the
   name is a function choosing by count, for `FUNCALL`, `APPLY` and use as a
-  value. Methods with `&OPTIONAL`, `&REST` or `&KEY` still work. A count no
+  value, about 2.5x a plain generic function called the same way. Methods with `&OPTIONAL`, `&REST` or `&KEY` still work. A count no
   method of the class takes is a clear error.
 - **`DEFINE-METHOD` adds to a generic function `DEFMETHOD` made.** It was
   rejected, its lambda list not congruent — which section 8 of
@@ -85,7 +87,7 @@ Found by `bench/program.lisp`, which writes one program both ways.
 - `bench/program.lisp` and `make bench-program` (SBCL): one program written
   in plain Common Lisp and in Common Lisp 3 — recursion, higher-order
   functions, sorting with a predicate, objects. The single namespace costs
-  nothing measurable; the layer over CLOS about 1.5x (it was 8x; see above).
+  nothing measurable; the layer over CLOS nothing either (it was 8x; see above).
 
 ### Changed — class variables are shared, as in Smalltalk
 

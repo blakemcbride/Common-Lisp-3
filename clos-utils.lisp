@@ -181,28 +181,40 @@ class variable through an instance sets the one value the class shares."
 
 ;  With the slot name a constant, as it nearly always is, an instance's slot is
 ;  a SLOT-VALUE the compiler can see, which SBCL makes as fast as an accessor.
+;  Inside a DEFINE-METHOD body, SELF is known to be an instance, so for it even
+;  the class-or-instance test goes: DEFINE-METHOD marks its body with the
+;  symbol macro below, which the compiler macros look for in their
+;  environment.  (Rebinding SELF to a class inside a method body defeats
+;  this; nothing else does.)
 
 (defun quoted-symbol-p (form)
   (and (consp form) (eq (car form) 'quote) (consp (cdr form))
        (symbolp (cadr form)) (null (cddr form))))
 
-(define-compiler-macro get-slot (&whole form obj slot)
-  (if (quoted-symbol-p slot)
-      (let ((o (gensym "OBJ")))
-        `(let ((,o ,obj))
-           (if (class-object-p ,o)
-               (slot-value (get-class-object ,o) ,slot)
-               (slot-value ,o ,slot))))
-      form))
+(defun method-self-p (form env)
+  "True when FORM is SELF inside a DEFINE-METHOD body."
+  (and (eq form 'self)
+       (nth-value 1 (macroexpand-1 'in-define-method env))))
 
-(define-compiler-macro set-slot (&whole form obj slot val)
-  (if (quoted-symbol-p slot)
-      (let ((o (gensym "OBJ")) (v (gensym "VAL")))
-        `(let ((,o ,obj) (,v ,val))
-           (if (class-object-p ,o)
-               (setf (slot-value (get-class-object ,o) ,slot) ,v)
-               (setf (slot-value ,o ,slot) ,v))))
-      form))
+(define-compiler-macro get-slot (&whole form obj slot &environment env)
+  (cond ((not (quoted-symbol-p slot)) form)
+        ((method-self-p obj env) `(slot-value ,obj ,slot))
+        (t
+         (let ((o (gensym "OBJ")))
+           `(let ((,o ,obj))
+              (if (class-object-p ,o)
+                  (slot-value (get-class-object ,o) ,slot)
+                  (slot-value ,o ,slot)))))))
+
+(define-compiler-macro set-slot (&whole form obj slot val &environment env)
+  (cond ((not (quoted-symbol-p slot)) form)
+        ((method-self-p obj env) `(setf (slot-value ,obj ,slot) ,val))
+        (t
+         (let ((o (gensym "OBJ")) (v (gensym "VAL")))
+           `(let ((,o ,obj) (,v ,val))
+              (if (class-object-p ,o)
+                  (setf (slot-value (get-class-object ,o) ,slot) ,v)
+                  (setf (slot-value ,o ,slot) ,v)))))))
 
 ;  ---- methods ---------------------------------------------------------
 ;
@@ -226,12 +238,25 @@ Recorded at compile time too, for the compiler macro.")
 
 (defun method-gf-name (name arity)
   "The hidden generic function for NAME's methods taking ARITY arguments
-after the instance, or NIL for its variadic methods."
-  (intern (format nil "METHOD ~a::~a/~a"
-                  (let ((p (symbol-package name))) (if p (package-name p) "#"))
-                  (symbol-name name)
-                  (or arity "*"))
-          "CL3-CELLS"))
+after the instance, or NIL for its variadic methods.
+
+Remembered on NAME's property list: the dispatching function asks on every
+call made through it -- FUNCALL of a value, APPLY, MAPCAR -- and building
+the name with FORMAT and INTERN each time made such a call thirty times the
+cost of a direct one."
+  (let* ((key (or arity :variadic))
+         (known (assoc key (get name 'method-gf-names))))
+    (if known
+        (cdr known)
+        (let ((symbol
+                (intern (format nil "METHOD ~a::~a/~a"
+                                (let ((p (symbol-package name)))
+                                  (if p (package-name p) "#"))
+                                (symbol-name name)
+                                (or arity "*"))
+                        "CL3-CELLS")))
+          (push (cons key symbol) (get name 'method-gf-names))
+          symbol))))
 
 (defun note-method-arity (name arity)
   (when arity
@@ -267,12 +292,17 @@ one DEFMETHOD made.  DEFINE-METHOD then adds an ordinary method to it."
       (error "DEFINE-METHOD: ~s is already a function or macro, which a ~
               method of that name would replace." name))
     (setf (get name 'define-method) t)
-    (setf (fdefinition name)
-          (lambda (self &rest args)
-            (let ((gf (method-gf-name name (length args))))
-              (if (fboundp gf)
-                  (apply gf self args)
-                  (call-variadic-method name self args))))))
+    ;  The hidden names for the first few counts, looked up once.
+    (let ((gfs (coerce (loop for n below 8 collect (method-gf-name name n))
+                       'simple-vector)))
+      (setf (fdefinition name)
+            (lambda (self &rest args)
+              (declare (dynamic-extent args))
+              (let* ((n (length args))
+                     (gf (if (< n 8) (svref gfs n) (method-gf-name name n))))
+                (if (fboundp gf)
+                    (apply (fdefinition gf) self args)
+                    (call-variadic-method name self (copy-list args))))))))
   name)
 
 (defun expand-method-call (form name)
@@ -283,6 +313,16 @@ argument count, when that is known to exist."
     (if (and (>= n 0) (member n (gethash name *method-arities*)))
         (cons (method-gf-name name n) args)
         form)))
+
+(defun method-body (body)
+  "BODY marked as a DEFINE-METHOD body; see METHOD-SELF-P.  Declarations
+stay at the head, where they belong."
+  (let ((decls '()))
+    (loop while (and (consp (car body)) (eq (caar body) 'declare))
+          do (push (pop body) decls))
+    `(symbol-macrolet ((in-define-method t))
+       ,@(nreverse decls)
+       ,@body)))
 
 (defmacro define-method (method-name class-name arg-list &rest body)
   "Define a method of METHOD-NAME for instances of CLASS-NAME, taking the
@@ -295,7 +335,8 @@ by DEFMETHOD, the method is added to it as DEFMETHOD would add it.
 SELF is exported by cl3.lisp: a method body written in another package would
 otherwise refer to its own SELF rather than this one."
   (if (foreign-generic-function-p method-name)
-      `(defmethod ,method-name ((self ,class-name) ,@arg-list) ,@body)
+      `(defmethod ,method-name ((self ,class-name) ,@arg-list)
+         ,(method-body body))
       (let* ((arity (and (fixed-arg-list-p arg-list) (length arg-list)))
              (gf (method-gf-name method-name arity))
              (whole (gensym "FORM")))
@@ -303,10 +344,12 @@ otherwise refer to its own SELF rather than this one."
            (eval-when (:compile-toplevel :load-toplevel :execute)
              (note-method-arity ',method-name ',arity))
            ,(if arity
-                `(defmethod ,gf ((self ,class-name) ,@arg-list) ,@body)
+                `(defmethod ,gf ((self ,class-name) ,@arg-list)
+                   ,(method-body body))
                 (let ((rest (gensym "ARGS")))
                   `(defmethod ,gf ((self ,class-name) &rest ,rest)
-                     (apply #'(lambda (self ,@arg-list) ,@body) self ,rest))))
+                     (apply #'(lambda (self ,@arg-list) ,(method-body body))
+                            self ,rest))))
            ;  A class with no method for this count may have a variadic one.
            ,@(when arity
                (let ((vars (loop repeat arity collect (gensym "ARG"))))
