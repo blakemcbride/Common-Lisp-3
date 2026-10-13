@@ -926,6 +926,24 @@ same function name fails the second time."
                   (eval-str "(untrace rf-sq)")))))
     (is-true (search "RF-SQ" (string-upcase text)) "CL:TRACE sees a call")))
 
+(deftest lambda-definitions-are-defuns (:phase "cl3" :severity :minor)
+  ;; A DEFINE of a literal lambda is a DEFUN, so the compiler knows it as it
+  ;; knows any function: INLINE works, and so does RETURN-FROM its name.
+  (eval-str "(define ld-early (lambda (x) (when (> x 0) (return-from ld-early :pos)) :not))")
+  (is-equal '(:pos :not) (eval-str "(list (ld-early 1) (ld-early -1))")
+            "RETURN-FROM the name works")
+  (is-true (eval-str "(eq #'ld-early ld-early)") "the value is the function")
+  (is-equal 9 (eval-str "(lisp1 (let ((ld-early (lambda (x) (* x x)))) (ld-early 3)))")
+            "a local binding of the name still wins")
+  #+sbcl
+  (progn
+    (eval-str "(progn (declaim (inline ld-sq)) (define ld-sq (lambda (x) (* x x))))")
+    (eval-str "(define ld-use (lambda (n) (ld-sq n)))")
+    (handler-bind ((warning #'muffle-warning))
+      (eval-str "(define ld-sq (lambda (x) (- x)))"))
+    (is-equal 9 (eval-str "(ld-use 3)")
+              "an INLINE declamation is honoured: the caller kept the old body")))
+
 (deftest misspelled-calls-are-reported (:phase "cl3" :severity :minor)
   ;; A call is a direct call, so a name never defined anywhere is the
   ;; compiler's undefined function, reported exactly as for a DEFUN.  SBCL and

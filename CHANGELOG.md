@@ -53,8 +53,14 @@ it now runs at the same speed.
   to 2.7x. Every assignment — `DEFINE`, `SETQ`, `SETF`, `(SETF VALUE-OF)`,
   from converted code or plain — keeps the value and the function definition
   in step; a non-function value leaves the name with no function definition.
-- **The compiler checks calls.** A literal-lambda definition proclaims an
-  `FTYPE`, so SBCL checks argument counts in plain Common Lisp too. The
+- **A definition written as a `lambda` is a `DEFUN`.** `(define f (lambda
+  ...))` expands to `(defun f ...)`, with the value set to the function it
+  defines. `(declaim (inline f))` therefore works — in SBCL an inlined call
+  in a loop ran twice as fast — and `(return-from f ...)` works inside it.
+  Redefining such a name draws the implementation's usual redefinition
+  warning, as redefining a `DEFUN` does.
+- **The compiler checks calls**, knowing a literal-lambda definition as the
+  `DEFUN` it is, so SBCL checks argument counts in plain Common Lisp too. The
   converter's own check, with `*CHECK-ARITY*`, now runs when a call is
   converted; there is no call-dispatch macro to run it at expansion.
 - **A misspelled call is reported again**, as an undefined function, exactly

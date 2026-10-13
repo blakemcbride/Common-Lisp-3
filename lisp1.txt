@@ -194,10 +194,16 @@ CL3:VALUE-OF and CL3:FUNCTION-OF give it directly, and
 CL3:TRACE-CALLS traces calls made through the value as well as by
 name.
 
-When the value is written as a literal lambda, DEFINE proclaims its
-FTYPE, so the compiler checks argument counts, and a converted call
-with the wrong number of arguments draws a style warning.  Set
-CL3:*CHECK-ARITY* to NIL to switch the latter off.
+When the value is written as a literal lambda, DEFINE is a DEFUN:
+
+    (define square (lambda (x) (* x x)))
+
+expands to (defun square (x) (* x x)), with the value set to the
+function it defines.  The compiler knows SQUARE as it knows any
+function, so it checks argument counts, (declaim (inline square))
+works, and (return-from square ...) works inside it.  A converted call
+with the wrong number of arguments also draws a style warning; set
+CL3:*CHECK-ARITY* to NIL to switch that off.
 
 Names need not be defined in order.  A free name that nothing has
 defined is taken to be a DEFINE further on, so mutual recursion just

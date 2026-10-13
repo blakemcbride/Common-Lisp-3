@@ -264,13 +264,25 @@ Checking then simply does not happen; the call still works."
 (defun global-lexical-forms (name value-form &key ftype)
   "Forms binding NAME as a global lexical holding VALUE-FORM, which is also
 NAME's function definition when it is a function.  FTYPE, when known, is
-proclaimed for NAME so that the compiler can check calls to it."
+proclaimed for NAME so that the compiler can check calls to it.
+
+A VALUE-FORM that is a literal lambda becomes a DEFUN, and the cell is given
+the function it defines.  The compiler then knows NAME as a function as it
+knows any other: (DECLAIM (INLINE NAME)) works, calls are checked, and NAME
+has the block a DEFUN has.  The FTYPE is not needed then, and not wanted:
+it would stand in for what the compiler learns from the DEFUN itself."
   (let ((cell (cell-symbol name))
         (new (gensym "NEW")))
     ;  The symbol macro comes before the assignment, so that a value referring
     ;  to NAME -- a recursive function, above all -- compiles to a read of the
     ;  cell rather than of a free variable NAME, unbound at run time.  The
     ;  FTYPE comes before it too, so that a recursive call is checked.
+    (when (and (consp value-form) (eq (car value-form) 'lambda))
+      (return-from global-lexical-forms
+        `((defvar ,cell)
+          (define-symbol-macro ,name (global-value ,cell ,name))
+          (defun ,name ,@(cdr value-form))
+          (setf (symbol-value ',cell) (function ,name)))))
     `((defvar ,cell)
       (define-symbol-macro ,name (global-value ,cell ,name))
       ,@(when ftype `((declaim (ftype ,ftype ,name))))
